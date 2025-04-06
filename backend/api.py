@@ -782,3 +782,334 @@ if __name__ == "__main__":
         )
     except Exception as e:
         logger.error(f"Failed to start server: {e}")
+
+from datetime import datetime, timedelta
+from database import db
+
+# User authentication models
+class UserAuthRequest(BaseModel):
+    user_id: str
+    email: str
+    first_name: str
+    last_name: str
+
+# User data models
+class SpaceRequest(BaseModel):
+    title: str
+    type: str
+
+class MessageRequest(BaseModel):
+    space_id: int
+    role: str
+    content: str
+    metadata: Optional[Dict[str, Any]] = None
+
+# User authentication endpoint
+@app.post("/user/auth")
+async def authenticate_user(request: UserAuthRequest):
+    """Authenticate or create a user"""
+    try:
+        user = db.get_or_create_user(
+            request.user_id,
+            request.email,
+            request.first_name,
+            request.last_name
+        )
+        
+        # Log login action
+        db.log_user_action(request.user_id, "login")
+        
+        if not user:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to authenticate user"}
+            )
+        
+        return {
+            "status": "success",
+            "user": user
+        }
+    except Exception as e:
+        logger.error(f"Authentication error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Authentication error: {str(e)}"}
+        )
+
+# User spaces endpoints
+@app.post("/user/spaces")
+async def create_user_space(request: SpaceRequest, user_auth: UserAuthRequest):
+    """Create a new space for the user"""
+    try:
+        space = db.create_space(user_auth.user_id, request.title, request.type)
+        
+        if not space:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to create space"}
+            )
+        
+        # Log space creation
+        db.log_user_action(user_auth.user_id, "create_space", {"space_id": space["space_id"]})
+        
+        return {
+            "status": "success",
+            "space": space
+        }
+    except Exception as e:
+        logger.error(f"Error creating space: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error creating space: {str(e)}"}
+        )
+
+@app.get("/user/spaces")
+async def get_user_spaces(user_id: str, limit: int = 10, offset: int = 0):
+    """Get all spaces for a user"""
+    try:
+        spaces = db.get_user_spaces(user_id, limit, offset)
+        
+        return {
+            "status": "success",
+            "spaces": spaces,
+            "count": len(spaces)
+        }
+    except Exception as e:
+        logger.error(f"Error getting spaces: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error getting spaces: {str(e)}"}
+        )
+
+@app.get("/spaces/{space_id}")
+async def get_space(space_id: int):
+    """Get a space by ID"""
+    try:
+        space = db.get_space(space_id)
+        
+        if not space:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Space not found"}
+            )
+        
+        # Get messages for this space
+        messages = db.get_space_messages(space_id)
+        space["messages"] = messages
+        
+        return {
+            "status": "success",
+            "space": space
+        }
+    except Exception as e:
+        logger.error(f"Error getting space: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error getting space: {str(e)}"}
+        )
+
+# Message endpoints
+@app.post("/spaces/{space_id}/messages")
+async def add_message(space_id: int, request: MessageRequest):
+    """Add a message to a space"""
+    try:
+        # Verify space exists
+        space = db.get_space(space_id)
+        if not space:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Space not found"}
+            )
+        
+        message = db.add_message(space_id, request.role, request.content, request.metadata)
+        
+        if not message:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to add message"}
+            )
+        
+        # Log message action
+        db.log_user_action(space["user_id"], "send_message", {
+            "space_id": space_id,
+            "message_id": message["message_id"],
+            "role": request.role
+        })
+        
+        return {
+            "status": "success",
+            "message": message
+        }
+    except Exception as e:
+        logger.error(f"Error adding message: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error adding message: {str(e)}"}
+        )
+
+@app.get("/spaces/{space_id}/messages")
+async def get_space_messages(space_id: int):
+    """Get all messages for a space"""
+    try:
+        # Verify space exists
+        space = db.get_space(space_id)
+        if not space:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Space not found"}
+            )
+        
+        messages = db.get_space_messages(space_id)
+        
+        return {
+            "status": "success",
+            "messages": messages,
+            "count": len(messages)
+        }
+    except Exception as e:
+        logger.error(f"Error getting messages: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error getting messages: {str(e)}"}
+        )
+
+# User stats endpoint
+@app.get("/user/{user_id}/stats")
+async def get_user_stats(user_id: str):
+    """Get usage statistics for a user"""
+    try:
+        stats = db.get_user_stats(user_id)
+        
+        return {
+            "status": "success",
+            "stats": stats
+        }
+    except Exception as e:
+        logger.error(f"Error getting user stats: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error getting user stats: {str(e)}"}
+        )
+
+# AI chat processing - Extended to work with database
+@app.post("/spaces/{space_id}/chat")
+async def process_chat_message(space_id: int, request: QueryRequest, user_id: str):
+    """Process a chat message and store in database"""
+    try:
+        # Verify space exists
+        space = db.get_space(space_id)
+        if not space:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Space not found"}
+            )
+        
+        # Verify user owns this space
+        if space["user_id"] != user_id:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "You don't have permission to access this space"}
+            )
+        
+        # Store user message
+        user_message = db.add_message(space_id, "user", request.query)
+        if not user_message:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to save user message"}
+            )
+        
+        # Process with RAG system
+        if not rag_system:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "RAG system not initialized"}
+            )
+        
+        # Handle based on space type
+        space_type = space["type"]
+        response = None
+        
+        try:
+            if space_type == "legal_research":
+                response = await rag_system.query(request.query, use_web=request.use_web)
+            elif space_type == "document_drafting":
+                response = await rag_system.query(request.query)
+            elif space_type == "legal_analysis":
+                response = await rag_system.query(request.query)
+            elif space_type == "citation_verification":
+                # If it looks like a citation, use verify endpoint, otherwise use query
+                if re.match(r'^[A-Z]+\s+\d{4}\s+[A-Z]+', request.query):
+                    response = await rag_system.verify_citation(request.query)
+                else:
+                    response = await rag_system.query(request.query)
+            elif space_type == "statute_interpretation":
+                response = await rag_system.query(request.query, use_web=True)
+            else:
+                response = await rag_system.query(request.query)
+        except Exception as e:
+            logger.error(f"Error in RAG processing: {e}")
+            # Store error message
+            error_message = db.add_message(
+                space_id, 
+                "assistant", 
+                f"I'm sorry, I encountered an error: {str(e)}. Please try again.",
+                {"error": str(e)}
+            )
+            return {
+                "status": "error",
+                "message": error_message,
+                "error": str(e)
+            }
+        
+        # Extract content from response based on type
+        answer_text = ""
+        if isinstance(response, str):
+            answer_text = response
+        elif response and isinstance(response, dict):
+            if "content" in response:
+                answer_text = response["content"]
+            elif "answer" in response:
+                answer_text = response["answer"]
+            elif "outline" in response:
+                answer_text = response["outline"]
+            elif "argument" in response:
+                answer_text = response["argument"]
+            elif "is_valid" in response:
+                answer_text = f"The citation {response['is_valid'] and 'is valid' or 'is not valid'}. "
+                if response.get("corrected_citation") and not response["is_valid"]:
+                    answer_text += f"Suggested correction: {response['corrected_citation']} "
+                if response.get("summary"):
+                    answer_text += f"\n\n{response['summary']}"
+            else:
+                answer_text = json.dumps(response, indent=2)
+        else:
+            answer_text = "I processed your request, but received an unexpected response format."
+        
+        # Store assistant message
+        assistant_message = db.add_message(space_id, "assistant", answer_text)
+        
+        if not assistant_message:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to save assistant message"}
+            )
+        
+        # Log chat completion
+        db.log_user_action(user_id, "chat_completion", {
+            "space_id": space_id,
+            "query_length": len(request.query),
+            "response_length": len(answer_text)
+        })
+        
+        return {
+            "status": "success",
+            "user_message": user_message,
+            "assistant_message": assistant_message
+        }
+    except Exception as e:
+        logger.error(f"Error processing chat: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error processing chat: {str(e)}"}
+        )
