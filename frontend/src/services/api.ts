@@ -90,6 +90,7 @@ function handleApiError(error: any): never {
 export const api = {
   // Basic query endpoint
   async query(request: QueryRequest): Promise<QueryResponse> {
+    const controller = new AbortController();
     try {
       console.log("Sending query request:", request);
       const response = await fetch(`${API_BASE_URL}/query`, {
@@ -98,6 +99,7 @@ export const api = {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(request),
+        signal: controller.signal
       });
       
       if (!response.ok) {
@@ -105,14 +107,29 @@ export const api = {
         throw { response: { data: errorData, status: response.status } };
       }
       
-      return await response.json();
+      const responseData = await response.json();
+      
+      // Handle case where response is in {content: xyz} format
+      if (responseData && typeof responseData === 'object' && 'content' in responseData) {
+        return {
+          answer: responseData.content,
+          sources: responseData.sources || [],
+          steps: responseData.steps || []
+        };
+      }
+      
+      return responseData;
     } catch (error) {
       throw handleApiError(error);
+    } finally {
+      controller.abort();
     }
   },
 
   // Streaming query endpoint
-  async streamQuery(request: QueryRequest, onStep: (step: StreamStep) => void): Promise<void> {
+  async streamQuery(request: QueryRequest, onStep: (step: StreamStep) => void): Promise<() => void> {
+    const controller = new AbortController();
+    
     try {
       const response = await fetch(`${API_BASE_URL}/query/stream`, {
         method: 'POST',
@@ -123,12 +140,11 @@ export const api = {
           ...request,
           stream_thinking: true
         }),
+        signal: controller.signal
       });
       
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw { response: { data: errorData, status: response.status } };
-      }
+      // Add streaming timeout
+      const timeout = setTimeout(() => controller.abort(), 30000);
       
       const reader = response.body?.getReader();
       if (!reader) throw new Error('Response body is not readable');
@@ -136,27 +152,38 @@ export const api = {
       const decoder = new TextDecoder();
       let buffer = '';
       
-      // Process the stream
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        buffer += decoder.decode(value, { stream: true });
-        
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || ''; // Keep the unfinished line in the buffer
-        
-        for (const line of lines) {
-          if (line.trim()) {
-            try {
-              const step = JSON.parse(line) as StreamStep;
-              onStep(step);
-            } catch (e) {
-              console.error('Error parsing stream data:', e);
+      const processStream = async () => {
+        // Process the stream
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          // Process chunks in batches
+          buffer += decoder.decode(value, { stream: true });
+          const batches = buffer.split('\n\n');  // Batch multiple steps
+          buffer = batches.pop() || '';
+          
+          for (const batch of batches) {
+            await new Promise(r => setTimeout(r, 0)); // Yield to UI thread
+            const lines = batch.split('\n');
+            for (const line of lines) {
+              if (line.trim()) {
+                try {
+                  const step = JSON.parse(line) as StreamStep;
+                  onStep(step);
+                } catch (e) {
+                  console.error('Error parsing stream data:', e);
+                }
+              }
             }
           }
         }
-      }
+        clearTimeout(timeout);
+      };
+      
+      processStream();
+      return () => controller.abort();
+      
     } catch (error) {
       onStep({
         type: 'error',
@@ -190,6 +217,7 @@ export const api = {
 
   async generateArgument(topic: string, points: string[]): Promise<ArgumentGenerationResponse> {
     try {
+      console.log("Generating argument with params:", { topic, points });
       const response = await fetch(`${API_BASE_URL}/generate_argument`, {
         method: 'POST',
         headers: {
@@ -203,7 +231,19 @@ export const api = {
         throw { response: { data: errorData, status: response.status } };
       }
       
-      return await response.json();
+      const responseData = await response.json();
+      
+      // Handle case where response is in {content: xyz} format
+      if (responseData && typeof responseData === 'object' && 'content' in responseData) {
+        return {
+          status: "success",
+          argument: responseData.content,
+          word_count: responseData.content.split(/\s+/).length,
+          character_count: responseData.content.length
+        };
+      }
+      
+      return responseData;
     } catch (error) {
       throw handleApiError(error);
     }
@@ -211,6 +251,7 @@ export const api = {
 
   async createOutline(topic: string, doc_type: string): Promise<OutlineGenerationResponse> {
     try {
+      console.log("Creating outline with params:", { topic, doc_type });
       const response = await fetch(`${API_BASE_URL}/create_outline`, {
         method: 'POST',
         headers: {
@@ -224,7 +265,19 @@ export const api = {
         throw { response: { data: errorData, status: response.status } };
       }
       
-      return await response.json();
+      const responseData = await response.json();
+      
+      // Handle case where response is in {content: xyz} format
+      if (responseData && typeof responseData === 'object' && 'content' in responseData) {
+        return {
+          status: "success",
+          outline: responseData.content,
+          section_count: 0, // Cannot determine from content field alone
+          subsection_count: 0
+        };
+      }
+      
+      return responseData;
     } catch (error) {
       throw handleApiError(error);
     }

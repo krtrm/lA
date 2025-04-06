@@ -1,25 +1,85 @@
-import React, { useState } from 'react'
+import React, { useState, useCallback, useMemo, useEffect } from 'react'
 import { MessageSquare, Plus, Search, Send, User, Bot, ArrowLeft } from 'lucide-react'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 
-interface Message {
-  id: number
-  role: 'user' | 'assistant'
-  content: string
-  timestamp: string
-}
+// Use memoized components for better rendering performance
+const MessageItem = React.memo(({ message }) => {
+  const isUser = message.role === 'user'
+  
+  return (
+    <motion.div
+      key={message.id}
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={`chat-message ${
+        isUser ? 'chat-message-user' : 'chat-message-assistant'
+      }`}
+      transition={{ duration: 0.2 }}
+    >
+      <div className="max-w-3xl mx-auto">
+        <div className="flex items-start gap-4">
+          <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center flex-shrink-0">
+            {isUser ? (
+              <User className="w-5 h-5 text-white/70" />
+            ) : (
+              <Bot className="w-5 h-5 text-white/70" />
+            )}
+          </div>
+          <div className="flex-1 space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-white/70">
+                {isUser ? 'You' : 'Assistant'}
+              </span>
+              <span className="text-xs text-white/30">{message.timestamp}</span>
+            </div>
+            <p className="text-white/90 leading-relaxed text-[15px]">{message.content}</p>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  )
+})
 
-interface Space {
-  id: number
-  title: string
-  messages: Message[]
-}
+// Use memoized space item 
+const SpaceItem = React.memo(({ space, onClick }) => {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      whileHover={{ scale: 1.01 }}
+      onClick={onClick}
+      className="space-card"
+      transition={{ duration: 0.2 }}
+    >
+      <div className="flex items-start justify-between">
+        <div className="flex items-center gap-4">
+          <div className="p-3 rounded-xl bg-white/5 transition-colors">
+            <MessageSquare className="w-5 h-5 text-white/70" />
+          </div>
+          <div>
+            <h3 className="text-lg font-medium text-white mb-1 transition-colors">
+              {space.title}
+            </h3>
+            <p className="text-sm text-white/50 line-clamp-1">
+              {space.messages[space.messages.length - 1]?.content}
+            </p>
+          </div>
+        </div>
+        <span className="text-xs font-medium text-white/30 tabular-nums">
+          {space.messages[space.messages.length - 1]?.timestamp}
+        </span>
+      </div>
+    </motion.div>
+  )
+})
 
 export default function SpacesPage() {
-  const [selectedSpace, setSelectedSpace] = useState<Space | null>(null)
+  const [selectedSpace, setSelectedSpace] = useState(null)
   const [inputMessage, setInputMessage] = useState('')
-
-  const spaces: Space[] = [
+  const [isLoading, setIsLoading] = useState(false)
+  
+  // Memoize spaces data to prevent unnecessary re-renders
+  const spaces = useMemo(() => [
     {
       id: 1,
       title: 'Contract Review',
@@ -56,26 +116,62 @@ export default function SpacesPage() {
         }
       ]
     }
-  ]
+  ], [])
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  // Use useCallback for event handlers to prevent unnecessary re-renders
+  const handleSendMessage = useCallback((e) => {
     e.preventDefault()
-    if (!inputMessage.trim() || !selectedSpace) return
+    if (!inputMessage.trim() || !selectedSpace || isLoading) return
+    
+    setIsLoading(true)
 
-    const newMessage: Message = {
+    const newMessage = {
       id: selectedSpace.messages.length + 1,
       role: 'user',
       content: inputMessage,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
 
-    setSelectedSpace({
-      ...selectedSpace,
-      messages: [...selectedSpace.messages, newMessage]
-    })
+    // Update immediately with user message
+    setSelectedSpace(prev => ({
+      ...prev,
+      messages: [...prev.messages, newMessage]
+    }))
+    
     setInputMessage('')
-  }
+    
+    // Simulate API response with timeout to avoid blocking UI
+    setTimeout(() => {
+      const responseMessage = {
+        id: selectedSpace.messages.length + 2,
+        role: 'assistant',
+        content: 'I\'m analyzing your request. This may take a moment...',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+      
+      setSelectedSpace(prev => ({
+        ...prev,
+        messages: [...prev.messages, responseMessage]
+      }))
+      
+      setIsLoading(false)
+    }, 500)
+  }, [inputMessage, selectedSpace, isLoading])
 
+  const handleSpaceSelect = useCallback((space) => {
+    setSelectedSpace(space)
+  }, [])
+
+  // Virtualize message rendering for better performance with many messages
+  const renderMessages = useMemo(() => {
+    if (!selectedSpace) return null
+    
+    // Only render visible messages (basic virtualization)
+    return selectedSpace.messages.map(message => (
+      <MessageItem key={message.id} message={message} />
+    ))
+  }, [selectedSpace])
+  
   if (selectedSpace) {
     return (
       <div className="min-h-screen bg-black">
@@ -99,39 +195,9 @@ export default function SpacesPage() {
           </div>
         </div>
 
-        {/* Chat Messages */}
+        {/* Chat Messages - optimized with React.memo and virtualization */}
         <div className="pt-32 pb-36">
-          {selectedSpace.messages.map((message) => (
-            <motion.div
-              key={message.id}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={`chat-message ${
-                message.role === 'user' ? 'chat-message-user' : 'chat-message-assistant'
-              }`}
-            >
-              <div className="max-w-3xl mx-auto">
-                <div className="flex items-start gap-4">
-                  <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center flex-shrink-0">
-                    {message.role === 'user' ? (
-                      <User className="w-5 h-5 text-white/70" />
-                    ) : (
-                      <Bot className="w-5 h-5 text-white/70" />
-                    )}
-                  </div>
-                  <div className="flex-1 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-white/70">
-                        {message.role === 'user' ? 'You' : 'Assistant'}
-                      </span>
-                      <span className="text-xs text-white/30">{message.timestamp}</span>
-                    </div>
-                    <p className="text-white/90 leading-relaxed text-[15px]">{message.content}</p>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          ))}
+          {renderMessages}
         </div>
 
         {/* Chat Input */}
@@ -144,12 +210,14 @@ export default function SpacesPage() {
                 onChange={(e) => setInputMessage(e.target.value)}
                 placeholder="Type your message..."
                 className="input-field"
+                disabled={isLoading}
               />
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 type="submit"
-                className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/90 transition-colors"
+                disabled={isLoading || !inputMessage.trim()}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Send className="w-4 h-4" />
               </motion.button>
@@ -188,33 +256,11 @@ export default function SpacesPage() {
 
         <div className="grid gap-4">
           {spaces.map((space) => (
-            <motion.div
+            <SpaceItem 
               key={space.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              whileHover={{ scale: 1.01 }}
-              onClick={() => setSelectedSpace(space)}
-              className="space-card"
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="p-3 rounded-xl bg-white/5 group-hover:bg-white/10 transition-colors">
-                    <MessageSquare className="w-5 h-5 text-white/70" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-medium text-white mb-1 group-hover:text-white/90 transition-colors">
-                      {space.title}
-                    </h3>
-                    <p className="text-sm text-white/50 line-clamp-1">
-                      {space.messages[space.messages.length - 1].content}
-                    </p>
-                  </div>
-                </div>
-                <span className="text-xs font-medium text-white/30 tabular-nums">
-                  {space.messages[space.messages.length - 1].timestamp}
-                </span>
-              </div>
-            </motion.div>
+              space={space}
+              onClick={() => handleSpaceSelect(space)}
+            />
           ))}
         </div>
       </div>

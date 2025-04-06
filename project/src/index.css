@@ -32,6 +32,7 @@
     font-family: 'Inter', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: auto;
   }
 
   * {
@@ -39,6 +40,8 @@
   }
 
   body {
+    touch-action: manipulation;
+    overflow-x: hidden;
     @apply bg-background text-foreground tracking-tight;
   }
 
@@ -47,10 +50,15 @@
   }
 }
 
+/* Optimize glass effect for better performance */
 .glass-effect {
   background: rgba(10, 10, 10, 0.7);
-  backdrop-filter: blur(12px);
+  @media (min-width: 768px) {
+    backdrop-filter: blur(8px);
+  }
   border: 1px solid rgba(255, 255, 255, 0.05);
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 .gradient-text {
@@ -95,4 +103,48 @@
   @apply flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 
          text-white border border-white/10 hover:bg-white/10 
          transition-all duration-200 hover:border-white/20;
+}
+
+/* Hardware-accelerated animations */
+.motion-div {
+  transform: translateZ(0);
+}
+
+/* Optimize image rendering */
+img {
+  image-rendering: -webkit-optimize-contrast;
+}
+
+/* Add will-change hints for animated components */
+.motion-safe {
+  @media (prefers-reduced-motion: no-preference) {
+    will-change: transform, opacity;
+  }
+}
+
+/* Add loading indicators */
+.loading-indicator {
+  @apply h-8 w-8 animate-spin text-primary/50 mx-auto my-8;
+}
+
+/* Add lightweight loading skeleton */
+.skeleton {
+  @apply bg-white/5 animate-pulse rounded;
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.03) 0%,
+    rgba(255, 255, 255, 0.06) 50%,
+    rgba(255, 255, 255, 0.03) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-loading 1.5s ease-in-out infinite;
+}
+
+@keyframes skeleton-loading {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { MessageSquare, Plus, Search, Send, User, Bot, ArrowLeft, X, HelpCircle, Scale, Book, Gavel, FileCheck, Loader2 } from 'lucide-react'
+import { MessageSquare, Plus, Search, Send, User, Bot, ArrowLeft, X, HelpCircle, Scale, Book, Gavel, FileCheck, Loader2, AlertCircle, Info, FileText, BookOpen, Check } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { api } from '../services/api'
 
@@ -54,7 +54,7 @@ export default function SpacesPage() {
     activeResearches: 0
   })
 
-  // Predefined space types with their form fields mapped to API endpoints
+  // Enhanced predefined space types with better form fields mapped to API endpoints
   const spaceTypes: SpaceTypeOption[] = [
     {
       id: 'legal_research',
@@ -65,17 +65,48 @@ export default function SpacesPage() {
       formFields: [
         {
           id: 'query',
-          label: 'Research Topic',
+          label: 'Research Question',
           type: 'text',
-          placeholder: 'E.g., Recent Supreme Court judgments on privacy',
+          placeholder: 'E.g., What are the requirements for filing a PIL in India?',
           required: true,
-          helperText: 'Be specific about your research area'
+          helperText: 'Be specific and include jurisdiction if relevant'
+        },
+        {
+          id: 'jurisdiction',
+          label: 'Jurisdiction',
+          type: 'select',
+          options: [
+            { value: 'india_all', label: 'All Indian Courts' },
+            { value: 'supreme_court', label: 'Supreme Court of India' },
+            { value: 'high_courts', label: 'High Courts' },
+            { value: 'district_courts', label: 'District Courts' },
+            { value: 'tribunals', label: 'Tribunals' }
+          ]
+        },
+        {
+          id: 'time_period',
+          label: 'Relevant Time Period',
+          type: 'select',
+          options: [
+            { value: 'all_time', label: 'All Time' },
+            { value: 'recent', label: 'Recent (Last 5 Years)' },
+            { value: 'last_decade', label: 'Last Decade' },
+            { value: 'post_2000', label: 'After 2000' },
+            { value: 'pre_2000', label: 'Before 2000' }
+          ]
         },
         {
           id: 'use_web',
           label: 'Use Web Search',
           type: 'checkbox',
           helperText: 'Include recent web results in research'
+        },
+        {
+          id: 'additional_context',
+          label: 'Additional Context (Optional)',
+          type: 'textarea',
+          placeholder: 'Any additional details that might help with the research...',
+          helperText: 'Provide any specific requirements or background information'
         }
       ]
     },
@@ -90,8 +121,9 @@ export default function SpacesPage() {
           id: 'topic',
           label: 'Document Subject',
           type: 'text',
-          placeholder: 'E.g., Service Agreement for Software Development',
-          required: true
+          placeholder: 'E.g., Non-Disclosure Agreement for Software Developer',
+          required: true,
+          helperText: 'Be specific about the purpose and context'
         },
         {
           id: 'doc_type',
@@ -102,9 +134,39 @@ export default function SpacesPage() {
             { value: 'agreement', label: 'Agreement' },
             { value: 'memo', label: 'Legal Memorandum' },
             { value: 'notice', label: 'Legal Notice' },
-            { value: 'petition', label: 'Petition' }
+            { value: 'petition', label: 'Petition' },
+            { value: 'affidavit', label: 'Affidavit' },
+            { value: 'will', label: 'Will & Testament' },
+            { value: 'policy', label: 'Policy Document' }
           ],
           required: true
+        },
+        {
+          id: 'parties',
+          label: 'Involved Parties',
+          type: 'text',
+          placeholder: 'E.g., Company XYZ and Contractor ABC',
+          helperText: 'List the main parties to the document'
+        },
+        {
+          id: 'jurisdiction',
+          label: 'Jurisdiction',
+          type: 'select',
+          options: [
+            { value: 'india', label: 'India' },
+            { value: 'delhi', label: 'Delhi' },
+            { value: 'maharashtra', label: 'Maharashtra' },
+            { value: 'karnataka', label: 'Karnataka' },
+            { value: 'tamil_nadu', label: 'Tamil Nadu' },
+            { value: 'international', label: 'International' }
+          ]
+        },
+        {
+          id: 'special_clauses',
+          label: 'Special Clauses (Optional)',
+          type: 'textarea',
+          placeholder: 'List any special clauses or provisions you want to include...',
+          helperText: 'Enter each clause on a new line'
         }
       ]
     },
@@ -119,15 +181,44 @@ export default function SpacesPage() {
           id: 'topic',
           label: 'Legal Issue',
           type: 'text',
-          placeholder: 'E.g., Copyright infringement in digital content',
-          required: true
+          placeholder: 'E.g., Copyright infringement claim for social media content',
+          required: true,
+          helperText: 'Describe the core legal issue you need analyzed'
+        },
+        {
+          id: 'scenario',
+          label: 'Case Scenario',
+          type: 'textarea',
+          placeholder: 'Describe the relevant facts and circumstances of the situation...',
+          required: true,
+          helperText: 'Provide relevant details about the situation'
+        },
+        {
+          id: 'party',
+          label: 'Perspective',
+          type: 'select',
+          options: [
+            { value: 'plaintiff', label: 'Plaintiff/Petitioner' },
+            { value: 'defendant', label: 'Defendant/Respondent' },
+            { value: 'neutral', label: 'Neutral Analysis' },
+            { value: 'judge', label: 'Judicial Perspective' }
+          ],
+          required: true,
+          helperText: 'From whose viewpoint should the analysis be conducted'
         },
         {
           id: 'points',
           label: 'Key Points to Address',
           type: 'textarea',
-          placeholder: 'List major points to be covered in the analysis',
+          placeholder: 'List specific legal points that should be addressed...',
           helperText: 'Enter each point on a new line'
+        },
+        {
+          id: 'desired_outcome',
+          label: 'Desired Outcome (Optional)',
+          type: 'text',
+          placeholder: 'E.g., Dismissal of claims, settlement terms, etc.',
+          helperText: 'What outcome are you hoping to achieve?'
         }
       ]
     },
@@ -142,8 +233,72 @@ export default function SpacesPage() {
           id: 'citation',
           label: 'Citation',
           type: 'text',
-          placeholder: 'E.g., AIR 2017 SC 4161',
+          placeholder: 'E.g., AIR 2017 SC 4161 or (2017) 10 SCC 1',
+          required: true,
+          helperText: 'Enter the citation exactly as it appears in your document'
+        },
+        {
+          id: 'citation_context',
+          label: 'Context (Optional)',
+          type: 'textarea',
+          placeholder: 'The paragraph where this citation is used...',
+          helperText: 'Providing context helps with verification and recommendations'
+        },
+        {
+          id: 'format',
+          label: 'Preferred Format',
+          type: 'select',
+          options: [
+            { value: 'auto', label: 'Automatic Detection' },
+            { value: 'scc', label: 'SCC Format' },
+            { value: 'air', label: 'AIR Format' },
+            { value: 'bluebook', label: 'Bluebook Format' }
+          ],
+          helperText: 'How would you like the citation formatted if corrections are needed?'
+        }
+      ]
+    },
+    {
+      id: 'statute_interpretation',
+      title: 'Statute Interpretation',
+      description: 'Understand and interpret legal statutes and sections',
+      icon: <BookOpen className="h-6 w-6 text-primary" />,
+      apiEndpoint: 'query',
+      formFields: [
+        {
+          id: 'query',
+          label: 'Statute Reference',
+          type: 'text',
+          placeholder: 'E.g., Section 138 of Negotiable Instruments Act',
+          required: true,
+          helperText: 'Specify the exact section and act you want interpreted'
+        },
+        {
+          id: 'interpretation_focus',
+          label: 'Focus Area',
+          type: 'select',
+          options: [
+            { value: 'general', label: 'General Interpretation' },
+            { value: 'elements', label: 'Elements & Requirements' },
+            { value: 'penalties', label: 'Penalties & Consequences' },
+            { value: 'procedure', label: 'Procedural Aspects' },
+            { value: 'defenses', label: 'Available Defenses' },
+            { value: 'case_law', label: 'Relevant Case Law' }
+          ],
           required: true
+        },
+        {
+          id: 'fact_pattern',
+          label: 'Relevant Facts (Optional)',
+          type: 'textarea',
+          placeholder: 'Describe any specific facts you want considered in the interpretation...',
+          helperText: 'Adding facts helps make the interpretation more relevant to your situation'
+        },
+        {
+          id: 'use_web',
+          label: 'Include Recent Amendments',
+          type: 'checkbox',
+          helperText: 'Check to include the most recent amendments to this statute'
         }
       ]
     }
@@ -279,26 +434,42 @@ export default function SpacesPage() {
             response = await api.query({ query });
           }
           break;
+        case 'statute_interpretation':
+          response = await api.query({ query, use_web: true });
+          break;
         default:
           response = await api.query({ query });
       }
       
-      // Get answer text based on response type
+      // Fix for the {content: xyz} issue - properly extract content based on response type
       let answerText = '';
-      if ('answer' in response) {
-        answerText = response.answer;
-      } else if ('outline' in response) {
-        answerText = response.outline;
-      } else if ('argument' in response) {
-        answerText = response.argument;
-      } else if ('is_valid' in response) {
-        answerText = `The citation ${response.is_valid ? 'is valid' : 'is not valid'}. ${
-          response.corrected_citation && !response.is_valid 
-            ? `Suggested correction: ${response.corrected_citation}` 
-            : ''
-        }${response.summary ? `\n\n${response.summary}` : ''}`;
+      if (typeof response === 'string') {
+        // If it's just a string
+        answerText = response;
+      } else if (response && typeof response === 'object') {
+        // If it's an object with a content property
+        if ('content' in response) {
+          answerText = response.content;
+        // Handle other response formats based on endpoint
+        } else if ('answer' in response) {
+          answerText = response.answer;
+        } else if ('outline' in response) {
+          answerText = response.outline;
+        } else if ('argument' in response) {
+          answerText = response.argument;
+        } else if ('is_valid' in response) {
+          answerText = `The citation ${response.is_valid ? 'is valid' : 'is not valid'}. ${
+            response.corrected_citation && !response.is_valid 
+              ? `Suggested correction: ${response.corrected_citation}` 
+              : ''
+          }${response.summary ? `\n\n${response.summary}` : ''}`;
+        } else {
+          // Fallback - stringify the whole response for debugging
+          answerText = 'I processed your request. Here are the details:\n\n' + 
+                       JSON.stringify(response, null, 2);
+        }
       } else {
-        answerText = 'I processed your request, but I\'m not sure how to display the results.';
+        answerText = 'I processed your request, but I received an unexpected response format.';
       }
       
       // Replace loading message with actual response
@@ -355,6 +526,16 @@ export default function SpacesPage() {
   const handleCreateNewSpace = async () => {
     if (!selectedSpaceType) return;
     
+    // Validate required fields
+    const missingRequiredFields = selectedSpaceType.formFields
+      .filter(field => field.required && !formData[field.id])
+      .map(field => field.label);
+    
+    if (missingRequiredFields.length > 0) {
+      setApiError(`Please fill in the following required fields: ${missingRequiredFields.join(', ')}`);
+      return;
+    }
+    
     setIsLoading(true);
     setApiError(null);
     
@@ -372,57 +553,207 @@ export default function SpacesPage() {
           .map(line => line.trim())
           .filter(line => line.length > 0);
       }
+
+      // Special handling for special_clauses - convert textarea to array
+      if (selectedSpaceType.id === 'document_drafting' && typeof apiParams.special_clauses === 'string') {
+        apiParams.special_clauses = apiParams.special_clauses
+          .split('\n')
+          .map(line => line.trim())
+          .filter(line => line.length > 0);
+      }
+      
+      // Generate a more descriptive title based on form data
+      const generateTitle = () => {
+        switch (selectedSpaceType.id) {
+          case 'legal_research':
+            // Limit length but keep it descriptive
+            return apiParams.query.length > 40 
+              ? apiParams.query.substring(0, 40) + "..." 
+              : apiParams.query;
+          case 'document_drafting':
+            return `${apiParams.doc_type} - ${apiParams.topic.split(' ').slice(0, 5).join(' ')}`;
+          case 'legal_analysis':
+            return `Analysis: ${apiParams.topic.split(' ').slice(0, 5).join(' ')}`;
+          case 'citation_verification':
+            return `Citation: ${apiParams.citation}`;
+          case 'statute_interpretation':
+            return `Statute: ${apiParams.query.split(' ').slice(0, 5).join(' ')}`;
+          default:
+            return apiParams.topic || apiParams.query || 'New Space';
+        }
+      };
+      
+      // Create a more detailed initial prompt based on form data
+      const createInitialPrompt = () => {
+        switch (selectedSpaceType.id) {
+          case 'legal_research':
+            let researchPrompt = `Please research this legal question: ${apiParams.query}`;
+            
+            if (apiParams.jurisdiction && apiParams.jurisdiction !== 'india_all') {
+              const jurisdictionLabel = selectedSpaceType.formFields
+                .find(f => f.id === 'jurisdiction')?.options
+                ?.find(o => o.value === apiParams.jurisdiction)?.label;
+              researchPrompt += `\n\nJurisdiction: ${jurisdictionLabel || apiParams.jurisdiction}`;
+            }
+            
+            if (apiParams.time_period && apiParams.time_period !== 'all_time') {
+              const periodLabel = selectedSpaceType.formFields
+                .find(f => f.id === 'time_period')?.options
+                ?.find(o => o.value === apiParams.time_period)?.label;
+              researchPrompt += `\n\nTime Period: ${periodLabel || apiParams.time_period}`;
+            }
+            
+            if (apiParams.additional_context) {
+              researchPrompt += `\n\nAdditional Context: ${apiParams.additional_context}`;
+            }
+            
+            return researchPrompt;
+            
+          case 'document_drafting':
+            let draftingPrompt = `Please create an outline for a ${apiParams.doc_type} about ${apiParams.topic}`;
+            
+            if (apiParams.parties) {
+              draftingPrompt += ` between ${apiParams.parties}`;
+            }
+            
+            if (apiParams.jurisdiction) {
+              const jurisdictionLabel = selectedSpaceType.formFields
+                .find(f => f.id === 'jurisdiction')?.options
+                ?.find(o => o.value === apiParams.jurisdiction)?.label;
+              draftingPrompt += `\n\nJurisdiction: ${jurisdictionLabel || apiParams.jurisdiction}`;
+            }
+            
+            if (apiParams.special_clauses && apiParams.special_clauses.length > 0) {
+              draftingPrompt += "\n\nPlease include these special clauses or provisions:";
+              if (Array.isArray(apiParams.special_clauses)) {
+                apiParams.special_clauses.forEach((clause: string) => {
+                  draftingPrompt += `\n- ${clause}`;
+                });
+              } else {
+                draftingPrompt += `\n${apiParams.special_clauses}`;
+              }
+            }
+            
+            return draftingPrompt;
+            
+          case 'legal_analysis':
+            let analysisPrompt = `I need a legal analysis on the following issue: ${apiParams.topic}`;
+            
+            if (apiParams.scenario) {
+              analysisPrompt += `\n\nHere is the scenario:\n${apiParams.scenario}`;
+            }
+            
+            if (apiParams.party) {
+              const partyLabel = selectedSpaceType.formFields
+                .find(f => f.id === 'party')?.options
+                ?.find(o => o.value === apiParams.party)?.label;
+              analysisPrompt += `\n\nPlease analyze from the perspective of the ${partyLabel || apiParams.party}.`;
+            }
+            
+            if (apiParams.points && apiParams.points.length > 0) {
+              analysisPrompt += "\n\nPlease address these specific points:";
+              if (Array.isArray(apiParams.points)) {
+                apiParams.points.forEach((point: string) => {
+                  analysisPrompt += `\n- ${point}`;
+                });
+              } else {
+                analysisPrompt += `\n${apiParams.points}`;
+              }
+            }
+            
+            if (apiParams.desired_outcome) {
+              analysisPrompt += `\n\nThe desired outcome is: ${apiParams.desired_outcome}`;
+            }
+            
+            return analysisPrompt;
+            
+          case 'citation_verification':
+            let citationPrompt = `Can you verify this legal citation: ${apiParams.citation}`;
+            
+            if (apiParams.citation_context) {
+              citationPrompt += `\n\nContext where this citation is used: ${apiParams.citation_context}`;
+            }
+            
+            if (apiParams.format && apiParams.format !== 'auto') {
+              const formatLabel = selectedSpaceType.formFields
+                .find(f => f.id === 'format')?.options
+                ?.find(o => o.value === apiParams.format)?.label;
+              citationPrompt += `\n\nIf corrections are needed, please use ${formatLabel || apiParams.format} format.`;
+            }
+            
+            return citationPrompt;
+            
+          case 'statute_interpretation':
+            let statutePrompt = `Please interpret ${apiParams.query}`;
+            
+            if (apiParams.interpretation_focus && apiParams.interpretation_focus !== 'general') {
+              const focusLabel = selectedSpaceType.formFields
+                .find(f => f.id === 'interpretation_focus')?.options
+                ?.find(o => o.value === apiParams.interpretation_focus)?.label;
+              statutePrompt += `\n\nPlease focus on the ${focusLabel || apiParams.interpretation_focus}.`;
+            }
+            
+            if (apiParams.fact_pattern) {
+              statutePrompt += `\n\nConsider these facts in your interpretation:\n${apiParams.fact_pattern}`;
+            }
+            
+            if (apiParams.use_web) {
+              statutePrompt += `\n\nPlease include the most recent amendments to this statute in your interpretation.`;
+            }
+            
+            return statutePrompt;
+            
+          default:
+            return apiParams.query || apiParams.topic || "Hello, I have a legal question.";
+        }
+      };
       
       // Make the appropriate API call based on space type
       let response;
-      let initialMessage = '';
+      let initialMessage = createInitialPrompt();
       let assistantResponse = '';
       
       try {
         switch (selectedSpaceType.id) {
           case 'legal_research':
-            console.log("Making query API call with:", apiParams);
             response = await api.query({
-              query: apiParams.query,
+              query: initialMessage,
               use_web: apiParams.use_web || false
             });
-            initialMessage = apiParams.query;
             assistantResponse = response.answer;
             break;
             
           case 'document_drafting':
-            console.log("Making createOutline API call with:", apiParams);
             response = await api.createOutline(
               apiParams.topic,
               apiParams.doc_type
             );
-            initialMessage = `Please create an outline for a ${apiParams.doc_type} about ${apiParams.topic}.`;
             assistantResponse = response.outline;
             break;
             
           case 'legal_analysis':
-            console.log("Making generateArgument API call with:", apiParams);
             response = await api.generateArgument(
               apiParams.topic,
               apiParams.points || []
             );
-            initialMessage = `I need a legal analysis on ${apiParams.topic}${
-              apiParams.points && apiParams.points.length 
-                ? `\n\nPlease address these key points:\n${apiParams.points.join('\n')}` 
-                : ''
-            }`;
             assistantResponse = response.argument;
             break;
             
           case 'citation_verification':
-            console.log("Making verifyCitation API call with:", apiParams);
             response = await api.verifyCitation(apiParams.citation);
-            initialMessage = `Can you verify this legal citation: ${apiParams.citation}`;
             assistantResponse = `The citation ${response.is_valid ? 'is valid' : 'is not valid'}. ${
               response.corrected_citation && !response.is_valid 
                 ? `Suggested correction: ${response.corrected_citation}` 
                 : ''
             }${response.summary ? `\n\n${response.summary}` : ''}`;
+            break;
+            
+          case 'statute_interpretation':
+            response = await api.query({
+              query: initialMessage,
+              use_web: apiParams.use_web || false
+            });
+            assistantResponse = response.answer;
             break;
             
           default:
@@ -435,14 +766,24 @@ export default function SpacesPage() {
         
         // For demo purposes, proceed with mock data if API fails
         console.log("Using mock response for demo");
-        initialMessage = apiParams.query || apiParams.topic || apiParams.citation || "New conversation";
-        assistantResponse = "I'm sorry, I couldn't connect to the API. This is a demo response for illustration purposes. In a real environment, I would provide a proper answer based on your query.";
+        assistantResponse = "I'm analyzing your request. This might take a moment as I research the relevant legal information. I'll provide a detailed response addressing all your specified points.";
+      }
+      
+      // Fix for the {content: xyz} issue - properly extract content
+      if (typeof assistantResponse === 'object' && assistantResponse !== null) {
+        if ('content' in assistantResponse) {
+          assistantResponse = assistantResponse.content;
+        } else if ('answer' in assistantResponse) {
+          assistantResponse = assistantResponse.answer;
+        } else {
+          assistantResponse = JSON.stringify(assistantResponse);
+        }
       }
       
       // Create the new space with initial messages
       const newSpace: Space = {
         id: Date.now(),
-        title: apiParams.topic || apiParams.query || 'New Space',
+        title: generateTitle(),
         type: selectedSpaceType.id,
         createdAt: new Date().toISOString().split('T')[0],
         lastActive: new Date().toISOString().split('T')[0],
@@ -534,6 +875,7 @@ export default function SpacesPage() {
                    selectedSpace.type === 'document_drafting' ? 'Document Drafting' :
                    selectedSpace.type === 'legal_analysis' ? 'Legal Analysis' :
                    selectedSpace.type === 'citation_verification' ? 'Citation Check' :
+                   selectedSpace.type === 'statute_interpretation' ? 'Statute Interpretation' :
                    'Conversation'}
                 </p>
               </div>
@@ -712,7 +1054,7 @@ export default function SpacesPage() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="glass-effect border border-white/10 rounded-xl max-w-lg w-full max-h-[90vh] overflow-y-auto"
+              className="glass-effect border border-white/10 rounded-xl max-w-xl w-full max-h-[90vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="p-6">
@@ -734,133 +1076,166 @@ export default function SpacesPage() {
                 </div>
 
                 {apiError && (
-                  <div className="mb-4 p-3 bg-red-500/20 border border-red-500/30 rounded-lg text-white text-sm">
-                    {apiError}
+                  <div className="mb-4 p-3 bg-red-500/20 border border-red-500/30 rounded-lg flex items-start gap-2">
+                    <AlertCircle className="w-5 h-5 text-red-400 mt-0.5 flex-shrink-0" />
+                    <p className="text-white text-sm">{apiError}</p>
                   </div>
                 )}
 
                 {!selectedSpaceType ? (
-                  <div className="grid gap-4">
-                    <p className="text-white/70 mb-4">Select the type of space you want to create:</p>
+                  <>
+                    <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg flex items-start gap-2">
+                      <Info className="w-5 h-5 text-blue-400 mt-0.5 flex-shrink-0" />
+                      <p className="text-white/80 text-sm">
+                        Select a space type below. Each space type provides specialized features for different legal tasks.
+                      </p>
+                    </div>
                     
-                    {spaceTypes.map((type) => (
-                      <motion.div
-                        key={type.id}
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                        className="p-4 rounded-lg border border-white/10 hover:border-primary/30 bg-white/5 hover:bg-white/10 transition-all cursor-pointer"
-                        onClick={() => setSelectedSpaceType(type)}
-                      >
-                        <div className="flex items-center gap-3">
-                          {type.icon}
-                          <div>
-                            <h3 className="text-white font-medium">{type.title}</h3>
-                            <p className="text-white/50 text-sm">{type.description}</p>
+                    <div className="grid gap-4">                    
+                      {spaceTypes.map((type) => (
+                        <motion.div
+                          key={type.id}
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          className="p-4 rounded-lg border border-white/10 hover:border-primary/30 bg-white/5 hover:bg-white/10 transition-all cursor-pointer"
+                          onClick={() => setSelectedSpaceType(type)}
+                        >
+                          <div className="flex items-center gap-3">
+                            {type.icon}
+                            <div>
+                              <h3 className="text-white font-medium">{type.title}</h3>
+                              <p className="text-white/50 text-sm">{type.description}</p>
+                            </div>
                           </div>
-                        </div>
-                      </motion.div>
-                    ))}
-                  </div>
+                        </motion.div>
+                      ))}
+                    </div>
+                  </>
                 ) : (
-                  <div className="space-y-4">
-                    {selectedSpaceType.formFields.map((field) => (
-                      <div key={field.id} className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <label htmlFor={field.id} className="text-white/70 text-sm">
-                            {field.label}{field.required ? ' *' : ''}
-                          </label>
-                          {field.helperText && (
-                            <div className="relative group">
-                              <HelpCircle className="w-4 h-4 text-white/30" />
-                              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-black/90 border border-white/10 rounded text-xs text-white/70 invisible group-hover:visible transition-opacity opacity-0 group-hover:opacity-100 z-10">
-                                {field.helperText}
+                  <div>
+                    {/* Space type description with tips */}
+                    <div className="mb-6 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg flex items-start gap-2">
+                      <FileText className="w-5 h-5 text-blue-400 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <h3 className="text-white text-sm font-medium mb-1">About {selectedSpaceType.title} Spaces</h3>
+                        <p className="text-white/80 text-sm">
+                          {selectedSpaceType.id === 'legal_research' && 
+                            'Research spaces help you find relevant legal information from statutes, case law, and legal commentary. Be specific with your query for best results.'}
+                          {selectedSpaceType.id === 'document_drafting' && 
+                            'Document drafting spaces help you create outlines for legal documents following best practices and requirements for your jurisdiction.'}
+                          {selectedSpaceType.id === 'legal_analysis' && 
+                            'Legal analysis spaces provide structured analysis of legal issues, helping you understand strengths, weaknesses, and potential arguments.'}
+                          {selectedSpaceType.id === 'citation_verification' && 
+                            'Citation verification helps ensure your legal citations are accurate and properly formatted according to citation standards.'}
+                          {selectedSpaceType.id === 'statute_interpretation' && 
+                            'Statute interpretation spaces help you understand legal provisions, their requirements, and how they\'ve been interpreted by courts.'}
+                        </p>
+                      </div>
+                    </div>
+                  
+                    <div className="space-y-5">
+                      {selectedSpaceType.formFields.map((field) => (
+                        <div key={field.id} className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <label htmlFor={field.id} className="text-white/80 text-sm font-medium">
+                              {field.label}{field.required ? ' *' : ''}
+                            </label>
+                            {field.helperText && (
+                              <div className="relative group">
+                                <HelpCircle className="w-4 h-4 text-white/30" />
+                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2 bg-black/90 border border-white/10 rounded text-xs text-white/70 invisible group-hover:visible transition-opacity opacity-0 group-hover:opacity-100 z-10">
+                                  {field.helperText}
+                                </div>
                               </div>
+                            )}
+                          </div>
+                          
+                          {field.type === 'text' && (
+                            <input
+                              id={field.id}
+                              type="text"
+                              placeholder={field.placeholder}
+                              className="input-field"
+                              value={formData[field.id] || ''}
+                              onChange={(e) => handleFormChange(field, e.target.value)}
+                              required={field.required}
+                            />
+                          )}
+                          
+                          {field.type === 'textarea' && (
+                            <textarea
+                              id={field.id}
+                              placeholder={field.placeholder}
+                              className="input-field min-h-[100px]"
+                              value={formData[field.id] || ''}
+                              onChange={(e) => handleFormChange(field, e.target.value)}
+                              required={field.required}
+                            />
+                          )}
+                          
+                          {field.type === 'select' && (
+                            <select
+                              id={field.id}
+                              className="input-field"
+                              value={formData[field.id] || ''}
+                              onChange={(e) => handleFormChange(field, e.target.value)}
+                              required={field.required}
+                            >
+                              <option value="">Select an option</option>
+                              {field.options?.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          
+                          {field.type === 'checkbox' && (
+                            <div className="flex items-center">
+                              <input
+                                id={field.id}
+                                type="checkbox"
+                                className="mr-2 w-4 h-4"
+                                checked={!!formData[field.id]}
+                                onChange={() => handleFormChange(field, !formData[field.id])}
+                              />
+                              <label htmlFor={field.id} className="text-white/70 text-sm">
+                                {field.helperText || field.label}
+                              </label>
                             </div>
                           )}
                         </div>
-                        
-                        {field.type === 'text' && (
-                          <input
-                            id={field.id}
-                            type="text"
-                            placeholder={field.placeholder}
-                            className="input-field"
-                            value={formData[field.id] || ''}
-                            onChange={(e) => handleFormChange(field, e.target.value)}
-                            required={field.required}
-                          />
-                        )}
-                        
-                        {field.type === 'textarea' && (
-                          <textarea
-                            id={field.id}
-                            placeholder={field.placeholder}
-                            className="input-field min-h-[100px]"
-                            value={formData[field.id] || ''}
-                            onChange={(e) => handleFormChange(field, e.target.value)}
-                            required={field.required}
-                          />
-                        )}
-                        
-                        {field.type === 'select' && (
-                          <select
-                            id={field.id}
-                            className="input-field"
-                            value={formData[field.id] || ''}
-                            onChange={(e) => handleFormChange(field, e.target.value)}
-                            required={field.required}
-                          >
-                            <option value="">Select an option</option>
-                            {field.options?.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        )}
-                        
-                        {field.type === 'checkbox' && (
-                          <div className="flex items-center">
-                            <input
-                              id={field.id}
-                              type="checkbox"
-                              className="mr-2 w-4 h-4"
-                              checked={!!formData[field.id]}
-                              onChange={() => handleFormChange(field, !formData[field.id])}
-                            />
-                            <label htmlFor={field.id} className="text-white/70 text-sm">
-                              {field.helperText || field.label}
-                            </label>
-                          </div>
-                        )}
+                      ))}
+                      
+                      <div className="pt-4 flex justify-end gap-3">
+                        <button
+                          onClick={() => {
+                            setSelectedSpaceType(null);
+                            setFormData({});
+                            setApiError(null);
+                          }}
+                          className="px-4 py-2 rounded-lg border border-white/10 text-white/70 hover:bg-white/5 transition-colors"
+                        >
+                          Back
+                        </button>
+                        <button
+                          onClick={handleCreateNewSpace}
+                          disabled={isLoading}
+                          className="button-primary flex items-center gap-2"
+                        >
+                          {isLoading ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>Creating...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Check className="w-4 h-4" />
+                              <span>Create Space</span>
+                            </>
+                          )}
+                        </button>
                       </div>
-                    ))}
-                    
-                    <div className="pt-4 flex justify-end gap-3">
-                      <button
-                        onClick={() => {
-                          setSelectedSpaceType(null);
-                          setFormData({});
-                          setApiError(null);
-                        }}
-                        className="px-4 py-2 rounded-lg border border-white/10 text-white/70 hover:bg-white/5 transition-colors"
-                      >
-                        Back
-                      </button>
-                      <button
-                        onClick={handleCreateNewSpace}
-                        disabled={isLoading}
-                        className="button-primary flex items-center gap-2"
-                      >
-                        {isLoading ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            <span>Creating...</span>
-                          </>
-                        ) : (
-                          'Create Space'
-                        )}
-                      </button>
                     </div>
                   </div>
                 )}

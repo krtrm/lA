@@ -170,3 +170,49 @@
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+/* Enhanced modal styles */
+.modal-backdrop {
+  @apply fixed inset-0 bg-black/80 backdrop-blur-md z-50 
+         flex items-center justify-center p-4;
+}
+
+.modal-content {
+  @apply glass-effect border border-white/10 rounded-xl 
+         max-w-xl w-full max-h-[90vh] overflow-y-auto;
+}
+
+.modal-header {
+  @apply flex justify-between items-center p-6 border-b border-white/10;
+}
+
+.modal-body {
+  @apply p-6;
+}
+
+.modal-footer {
+  @apply p-6 border-t border-white/10 flex justify-end gap-3;
+}
+
+/* Form field hints with improved styling */
+.form-hint {
+  @apply text-xs text-white/50 mt-1 ml-1;
+}
+
+/* Info alert styling */
+.info-alert {
+  @apply mb-4 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg 
+         flex items-start gap-2;
+}
+
+/* Error alert styling */
+.error-alert {
+  @apply mb-4 p-3 bg-red-500/20 border border-red-500/30 rounded-lg 
+         flex items-start gap-2;
+}
+
+/* Success alert styling */
+.success-alert {
+  @apply mb-4 p-3 bg-green-500/20 border border-green-500/30 rounded-lg 
+         flex items-start gap-2;
+}

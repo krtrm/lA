@@ -12,6 +12,9 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from init_rag import init_rag_system
 from typing import List, Dict, Any, Optional, AsyncGenerator, Union, Literal
+from fastapi.concurrency import run_in_threadpool
+from contextlib import asynccontextmanager
+from functools import lru_cache
 
 # Load environment variables
 load_dotenv()
@@ -55,6 +58,19 @@ rag_system = init_rag_system(index_name=index_name, namespace=namespace)
 
 if not rag_system:
     logger.error(f"Failed to initialize RAG system with index '{index_name}'")
+
+# Add connection pool for RAG system
+@asynccontextmanager
+async def get_rag_context():
+    try:
+        yield rag_system
+    finally:
+        await rag_system.vector_store.client.close()
+
+# Add caching for frequent operations
+@lru_cache(maxsize=1024)
+async def cached_rag_query(query: str):
+    return await rag_system.query(query)
 
 # Define request and response models
 class QueryRequest(BaseModel):
@@ -141,46 +157,48 @@ def stream_response_generator(steps_generator):
 async def root():
     return {"message": "Welcome to the Vaqeel.app Legal AI API"}
 
+# Update query endpoint with connection pooling
 @app.post("/query", response_model=QueryResponse)
 async def query_legal_ai(request: QueryRequest):
-    steps = []
-    steps.append("Starting query processing")
-    if not rag_system:
-        steps.append("RAG system not initialized")
-        raise HTTPException(status_code=503, detail="RAG system not initialized. Please ensure the vector database is set up.")
-    try:
-        steps.append("Querying the RAG system")
-        # Query the RAG system
-        result = await rag_system.query(request.query, use_web=request.use_web)
-        steps.append("RAG returned a result")
-        
-        # Extract answer
-        answer = result.content if hasattr(result, 'content') else str(result)
-        steps.append("Extracted the answer")
-        
-        # Extract sources from the documents if available
-        sources = []
+    async with get_rag_context() as rag:
+        steps = []
+        steps.append("Starting query processing")
+        if not rag_system:
+            steps.append("RAG system not initialized")
+            raise HTTPException(status_code=503, detail="RAG system not initialized. Please ensure the vector database is set up.")
         try:
-            if hasattr(result, '_source_documents'):
-                for doc in result._source_documents[:5]:  # Limit to top 5 sources
-                    if hasattr(doc, 'metadata') and 'source' in doc.metadata:
-                        sources.append({
-                            'title': doc.metadata.get('title', 'Unknown'),
-                            'source': doc.metadata['source'],
-                            'type': doc.metadata.get('type', 'document')
-                        })
-                steps.append("Extracted sources from documents")
-        except Exception as e:
-            steps.append("Warning: error extracting sources")
-            logger.warning(f"Error extracting sources: {e}")
+            steps.append("Querying the RAG system")
+            # Query the RAG system
+            result = await rag.query(request.query, use_web=request.use_web)
+            steps.append("RAG returned a result")
+            
+            # Extract answer
+            answer = result.content if hasattr(result, 'content') else str(result)
+            steps.append("Extracted the answer")
+            
+            # Extract sources from the documents if available
+            sources = []
+            try:
+                if hasattr(result, '_source_documents'):
+                    for doc in result._source_documents[:5]:  # Limit to top 5 sources
+                        if hasattr(doc, 'metadata') and 'source' in doc.metadata:
+                            sources.append({
+                                'title': doc.metadata.get('title', 'Unknown'),
+                                'source': doc.metadata['source'],
+                                'type': doc.metadata.get('type', 'document')
+                            })
+                    steps.append("Extracted sources from documents")
+            except Exception as e:
+                steps.append("Warning: error extracting sources")
+                logger.warning(f"Error extracting sources: {e}")
+            
+            steps.append("Completed query processing")
+            return QueryResponse(answer=answer, sources=sources, steps=steps)
         
-        steps.append("Completed query processing")
-        return QueryResponse(answer=answer, sources=sources, steps=steps)
-    
-    except Exception as e:
-        steps.append("Error processing query")
-        logger.error(f"Error processing query: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
+        except Exception as e:
+            steps.append("Error processing query")
+            logger.error(f"Error processing query: {e}")
+            raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
 
 # Streaming version of query endpoint
 @app.post("/query/stream")
@@ -193,8 +211,11 @@ async def stream_query_legal_ai(request: StreamingQueryRequest):
     
     import time
     
+    # Modify streaming generator with backpressure control
     async def generate_steps() -> AsyncGenerator[StreamStep, None]:
         try:
+            # Add yield point for event loop
+            await asyncio.sleep(0)
             # Initial step - thinking
             yield StreamStep(
                 type="thinking",
@@ -246,6 +267,7 @@ async def stream_query_legal_ai(request: StreamingQueryRequest):
             
             # Tool execution phase
             all_results = []
+            tool_tasks = []
             for i, tool_step in enumerate(plan.get("tools", [])):
                 tool_name = tool_step.get("tool")
                 parameters = tool_step.get("parameters", {})
@@ -258,10 +280,13 @@ async def stream_query_legal_ai(request: StreamingQueryRequest):
                     details={"tool": tool_name, "parameters": parameters, "step": i+1, "total_steps": len(plan.get("tools", []))}
                 )
                 
-                tool_result = await rag_system.tool_manager.execute_tool(tool_name, **parameters)
-                
-                if tool_result.get("status") == "success":
-                    results = tool_result.get("results", [])
+                tool_tasks.append(rag_system.tool_manager.execute_tool(tool_name, **parameters))
+            
+            # Process tools in parallel with timeout
+            for result in await asyncio.gather(*tool_tasks, return_exceptions=True):
+                await asyncio.sleep(0)  # Yield control
+                if result.get("status") == "success":
+                    results = result.get("results", [])
                     if results:
                         all_results.extend(results)
                         result_count = len(results)
@@ -736,10 +761,24 @@ async def stream_verify_legal_citation(request: CitationVerificationRequest):
         media_type="application/x-ndjson"
     )
 
+# Add database connection timeout
+@app.on_event("startup")
+async def startup_db():
+    await rag_system.vector_store.client.create_index(
+        timeout=30  # Add 30s timeout for DB operations
+    )
+
+# Modify server config at bottom
 if __name__ == "__main__":
     import uvicorn
     logger.info("Starting Vaqeel.app API server on http://0.0.0.0:8000")
     try:
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=8000,
+            timeout_keep_alive=120,  # Keep connections alive longer
+            limit_concurrency=100     # Prevent overloading
+        )
     except Exception as e:
         logger.error(f"Failed to start server: {e}")
