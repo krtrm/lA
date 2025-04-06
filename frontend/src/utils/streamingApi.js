@@ -2,7 +2,8 @@
  * Utility functions for consuming the streaming API endpoints
  */
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+// Update to use Vite environment variable syntax
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 /**
  * Process a streaming response from the API

@@ -65,7 +65,11 @@ async def get_rag_context():
     try:
         yield rag_system
     finally:
-        await rag_system.vector_store.client.close()
+        # Safe cleanup that doesn't rely on client.close()
+        if hasattr(rag_system, 'vector_store'):
+            # For new Pinecone SDK, there's no explicit client.close() method needed
+            # Just make sure we don't maintain any unnecessary references
+            pass
 
 # Add caching for frequent operations
 @lru_cache(maxsize=1024)
@@ -761,13 +765,6 @@ async def stream_verify_legal_citation(request: CitationVerificationRequest):
         media_type="application/x-ndjson"
     )
 
-# Add database connection timeout
-@app.on_event("startup")
-async def startup_db():
-    await rag_system.vector_store.client.create_index(
-        timeout=30  # Add 30s timeout for DB operations
-    )
-
 # Modify server config at bottom
 if __name__ == "__main__":
     import uvicorn
@@ -1112,4 +1109,564 @@ async def process_chat_message(space_id: int, request: QueryRequest, user_id: st
         return JSONResponse(
             status_code=500,
             content={"error": f"Error processing chat: {str(e)}"}
+        )
+
+import requests
+import re
+from datetime import datetime, timedelta
+
+# Blog related models and endpoints
+class BlogPostRequest(BaseModel):
+    title: str
+    content: str
+    summary: Optional[str] = None
+    category: Optional[str] = None
+    tags: Optional[List[str]] = None
+    published: Optional[bool] = True
+
+class BlogCommentRequest(BaseModel):
+    content: str
+
+@app.post("/blogs")
+async def create_blog_post(request: BlogPostRequest, user_id: str):
+    """Create a new blog post"""
+    try:
+        blog = db.create_blog(
+            user_id=user_id,
+            title=request.title,
+            content=request.content,
+            summary=request.summary,
+            category=request.category,
+            tags=request.tags
+        )
+        
+        if not blog:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to create blog post"}
+            )
+        
+        # Log blog creation
+        db.log_user_action(user_id, "create_blog", {"blog_id": blog["blog_id"]})
+        
+        return {
+            "status": "success",
+            "blog": blog
+        }
+    except Exception as e:
+        logger.error(f"Error creating blog post: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error creating blog post: {str(e)}"}
+        )
+
+@app.get("/blogs")
+async def get_blog_posts(
+    limit: int = 10, 
+    offset: int = 0, 
+    category: Optional[str] = None,
+    user_id: Optional[str] = None,
+    is_official: Optional[bool] = None,
+    published_only: bool = True
+):
+    """Get blog posts with optional filtering"""
+    try:
+        blogs = db.get_blogs(
+            limit=limit,
+            offset=offset,
+            category=category,
+            user_id=user_id,
+            is_official=is_official,
+            published_only=published_only
+        )
+        
+        return {
+            "status": "success",
+            "blogs": blogs,
+            "count": len(blogs)
+        }
+    except Exception as e:
+        logger.error(f"Error getting blog posts: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error getting blog posts: {str(e)}"}
+        )
+
+@app.get("/blogs/{blog_id}")
+async def get_blog_post(blog_id: int):
+    """Get a blog post by ID"""
+    try:
+        blog = db.get_blog(blog_id)
+        
+        if not blog:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Blog post not found"}
+            )
+        
+        # Get comments for this blog
+        comments = db.get_blog_comments(blog_id)
+        blog["comments"] = comments
+        
+        return {
+            "status": "success",
+            "blog": blog
+        }
+    except Exception as e:
+        logger.error(f"Error getting blog post: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error getting blog post: {str(e)}"}
+        )
+
+@app.put("/blogs/{blog_id}")
+async def update_blog_post(blog_id: int, request: BlogPostRequest, user_id: str):
+    """Update a blog post"""
+    try:
+        # Create dict of updates
+        updates = request.dict(exclude_unset=True)
+        
+        blog = db.update_blog(blog_id, user_id, updates)
+        
+        if not blog:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Blog post not found or you don't have permission to edit it"}
+            )
+        
+        # Log blog update
+        db.log_user_action(user_id, "update_blog", {"blog_id": blog_id})
+        
+        return {
+            "status": "success",
+            "blog": blog
+        }
+    except Exception as e:
+        logger.error(f"Error updating blog post: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error updating blog post: {str(e)}"}
+        )
+
+@app.delete("/blogs/{blog_id}")
+async def delete_blog_post(blog_id: int, user_id: str):
+    """Delete a blog post"""
+    try:
+        success = db.delete_blog(blog_id, user_id)
+        
+        if not success:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Blog post not found or you don't have permission to delete it"}
+            )
+        
+        # Log blog deletion
+        db.log_user_action(user_id, "delete_blog", {"blog_id": blog_id})
+        
+        return {
+            "status": "success",
+            "message": "Blog post deleted successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error deleting blog post: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error deleting blog post: {str(e)}"}
+        )
+
+@app.post("/blogs/{blog_id}/comments")
+async def add_blog_comment(blog_id: int, request: BlogCommentRequest, user_id: str):
+    """Add a comment to a blog post"""
+    try:
+        # Verify blog exists
+        blog = db.get_blog(blog_id)
+        if not blog:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Blog post not found"}
+            )
+        
+        comment = db.add_blog_comment(blog_id, user_id, request.content)
+        
+        if not comment:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to add comment"}
+            )
+        
+        # Log comment action
+        db.log_user_action(user_id, "comment_blog", {
+            "blog_id": blog_id,
+            "comment_id": comment["comment_id"]
+        })
+        
+        return {
+            "status": "success",
+            "comment": comment
+        }
+    except Exception as e:
+        logger.error(f"Error adding comment: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error adding comment: {str(e)}"}
+        )
+
+@app.get("/blogs/{blog_id}/comments")
+async def get_blog_comments(blog_id: int):
+    """Get all comments for a blog post"""
+    try:
+        # Verify blog exists
+        blog = db.get_blog(blog_id)
+        if not blog:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Blog post not found"}
+            )
+        
+        comments = db.get_blog_comments(blog_id)
+        
+        return {
+            "status": "success",
+            "comments": comments,
+            "count": len(comments)
+        }
+    except Exception as e:
+        logger.error(f"Error getting comments: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error getting comments: {str(e)}"}
+        )
+
+@app.post("/blogs/{blog_id}/like")
+async def like_blog_post(blog_id: int, user_id: str):
+    """Like a blog post"""
+    try:
+        # Verify blog exists
+        blog = db.get_blog(blog_id)
+        if not blog:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Blog post not found"}
+            )
+        
+        success = db.like_blog(blog_id)
+        
+        if not success:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to like blog post"}
+            )
+        
+        # Log like action
+        db.log_user_action(user_id, "like_blog", {"blog_id": blog_id})
+        
+        return {
+            "status": "success",
+            "message": "Blog post liked successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error liking blog post: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error liking blog post: {str(e)}"}
+        )
+
+@app.get("/blogs/categories")
+async def get_blog_categories():
+    """Get all unique blog categories"""
+    try:
+        categories = db.get_blog_categories()
+        
+        return {
+            "status": "success",
+            "categories": categories
+        }
+    except Exception as e:
+        logger.error(f"Error getting blog categories: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error getting blog categories: {str(e)}"}
+        )
+
+# News sources endpoints
+@app.post("/news/sources")
+async def add_news_source(
+    name: str,
+    url: Optional[str] = None,
+    logo_url: Optional[str] = None,
+    description: Optional[str] = None,
+    is_verified: bool = False,
+    user_id: str = None
+):
+    """Add a news source"""
+    try:
+        # Admin check here if needed
+        
+        source = db.add_news_source(
+            name=name,
+            url=url,
+            logo_url=logo_url,
+            description=description,
+            is_verified=is_verified
+        )
+        
+        if not source:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to add news source"}
+            )
+        
+        # Log source creation
+        if user_id:
+            db.log_user_action(user_id, "add_news_source", {"source_id": source["source_id"]})
+        
+        return {
+            "status": "success",
+            "source": source
+        }
+    except Exception as e:
+        logger.error(f"Error adding news source: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error adding news source: {str(e)}"}
+        )
+
+@app.get("/news/sources")
+async def get_news_sources(verified_only: bool = False):
+    """Get all news sources"""
+    try:
+        sources = db.get_news_sources(verified_only)
+        
+        return {
+            "status": "success",
+            "sources": sources,
+            "count": len(sources)
+        }
+    except Exception as e:
+        logger.error(f"Error getting news sources: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error getting news sources: {str(e)}"}
+        )
+
+# Fetch official news from APIs
+@app.get("/news/official")
+async def fetch_official_news(force_refresh: bool = False):
+    """Fetch official legal news from external APIs"""
+    try:
+        # Check if we need to fetch new data or if cached data is available
+        # This is a simplified example - in a real app, you'd check timestamps of latest news
+        if not force_refresh:
+            # Check for existing official news in last 24 hours
+            recent_news = db.get_blogs(limit=5, is_official=True)
+            if recent_news and len(recent_news) > 0:
+                return {
+                    "status": "success",
+                    "news": recent_news,
+                    "count": len(recent_news),
+                    "source": "database"
+                }
+        
+        # We'll simulate fetching from an API here
+        # In a real app, you'd use requests to call actual legal news APIs
+        # Example: Indian Kanoon API, Legal News API, etc.
+        
+        # For this example, I'll create some simulated legal news
+        # In a real implementation, replace with actual API call
+        
+        legal_news = await fetch_legal_news_from_api()
+        
+        # Process and store news
+        saved_news = []
+        for news in legal_news:
+            # Get or create source
+            sources = db.get_news_sources(verified_only=True)
+            source_id = sources[0]["source_id"] if sources else None
+            
+            if not source_id:
+                # Create a default verified source
+                source = db.add_news_source(
+                    name="Indian Legal News",
+                    url="https://indianlegalnews.org",
+                    logo_url="https://example.com/logo.png",
+                    description="Official source for Indian legal news",
+                    is_verified=True
+                )
+                source_id = source["source_id"] if source else None
+            
+            # Store the news
+            saved = db.add_official_news(
+                title=news["title"],
+                content=news["content"],
+                summary=news["summary"],
+                source_id=source_id,
+                source_url=news["url"],
+                user_id="system",  # Using a system user ID
+                category=news["category"],
+                tags=news["tags"]
+            )
+            
+            if saved:
+                saved_news.append(saved)
+        
+        return {
+            "status": "success",
+            "news": saved_news,
+            "count": len(saved_news),
+            "source": "api"
+        }
+    except Exception as e:
+        logger.error(f"Error fetching official news: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error fetching official news: {str(e)}"}
+        )
+
+async def fetch_legal_news_from_api():
+    """
+    Simulate fetching from a legal news API
+    In a real implementation, this would make actual API calls
+    """
+    # Sample legal news data
+    return [
+        {
+            "title": "Supreme Court Issues New Guidelines on Bail Applications",
+            "summary": "The Supreme Court has issued comprehensive guidelines to streamline the bail application process across all courts in India.",
+            "content": """# Supreme Court Issues New Guidelines on Bail Applications
+
+The Supreme Court of India has issued a landmark judgment today that establishes comprehensive guidelines for handling bail applications across all courts in the country. The bench, headed by the Chief Justice, emphasized that bail should be the rule and jail the exception.
+
+## Key Guidelines:
+
+1. **Timely Processing**: All bail applications must be heard within 3 working days of filing
+2. **Reasoned Orders**: Courts must provide detailed reasoning for granting or denying bail
+3. **Financial Constraints**: Inability to furnish bail bonds due to financial constraints should not keep undertrials in custody
+4. **Special Provisions**: Special considerations for women, elderly, and first-time offenders
+
+The Court noted that overcrowding in prisons, with a majority being undertrials, necessitated these reforms. "The right to personal liberty is a precious fundamental right and should be curtailed only when necessary," stated the Chief Justice.
+
+Legal experts have welcomed this development, noting it could significantly reduce the burden on the prison system while protecting individual rights.
+
+The guidelines will come into effect immediately and will be binding on all courts across India.
+            """,
+            "url": "https://supremecourt.gov.in/news/guidelines-bail-applications",
+            "category": "Supreme Court",
+            "tags": ["Bail", "Criminal Procedure", "Supreme Court", "Guidelines"]
+        },
+        {
+            "title": "Parliament Passes Digital Personal Data Protection Act",
+            "summary": "The Indian Parliament has passed the Digital Personal Data Protection Act, establishing new regulations for handling personal data.",
+            "content": """# Parliament Passes Digital Personal Data Protection Act
+
+In a significant move toward regulating the digital ecosystem, the Indian Parliament has passed the Digital Personal Data Protection Act after years of deliberation. The legislation aims to protect the personal data of Indian citizens while establishing clear regulations for data processing by both government and private entities.
+
+## Key Provisions:
+
+1. **Data Fiduciary Responsibilities**: Organizations collecting personal data will have specific obligations regarding data security, transparency, and purpose limitation
+2. **Individual Rights**: Citizens gain the right to access, correct, and erase their personal data
+3. **Data Protection Authority**: Creation of an independent regulatory body to enforce compliance
+4. **Penalties**: Significant financial penalties for violations, up to 4% of global turnover
+
+"This law strikes a balance between data protection and allowing innovation in the digital economy," said the Minister for Electronics and IT. The legislation brings India in line with global standards such as the GDPR in Europe while addressing India-specific concerns.
+
+Industry representatives have generally welcomed the move while expressing concerns about implementation challenges. Privacy advocates have praised the rights-based approach but noted that certain exemptions for government agencies could be potentially problematic.
+
+The Act will come into force in phases over the next 12 months, giving organizations time to adjust their data practices to the new requirements.
+            """,
+            "url": "https://meity.gov.in/digital-personal-data-protection-act",
+            "category": "Legislation",
+            "tags": ["Data Protection", "Privacy", "Legislation", "Technology Law"]
+        },
+        {
+            "title": "Delhi High Court Rules on Trademark Infringement in E-commerce",
+            "summary": "A landmark judgment from the Delhi High Court addresses trademark infringement liability for e-commerce platforms.",
+            "content": """# Delhi High Court Rules on Trademark Infringement in E-commerce
+
+The Delhi High Court has delivered a landmark judgment on trademark infringement in the e-commerce space, potentially reshaping how online marketplaces operate in India. The ruling clarifies the extent of liability e-commerce platforms have when third-party sellers list counterfeit products.
+
+## Highlights of the Judgment:
+
+1. **Safe Harbor Provisions**: The court narrowed the interpretation of safe harbor provisions that protect intermediaries
+2. **Due Diligence Requirements**: E-commerce platforms must implement specific verification measures for branded products
+3. **Notice and Takedown**: Clarified timelines and procedures for addressing infringement complaints
+4. **Financial Penalties**: Established guidelines for calculating damages in trademark infringement cases
+
+Justice Sharma noted, "While e-commerce has created tremendous opportunities for businesses and consumers alike, it has also facilitated the proliferation of counterfeit goods. Platforms cannot claim immunity while benefiting financially from such transactions."
+
+The case, filed by a leading luxury brand against a major e-commerce platform, alleged that counterfeit products bearing their trademark were being sold despite multiple notifications.
+
+Legal experts suggest this ruling sets an important precedent that balances the interests of brand owners with the practical realities of operating online marketplaces. The judgment gives platforms 90 days to implement the required verification systems.
+            """,
+            "url": "https://delhihighcourt.nic.in/judgments/trademark-ecommerce-2023",
+            "category": "Intellectual Property",
+            "tags": ["Trademark", "E-commerce", "Intellectual Property", "Delhi High Court"]
+        }
+    ]
+
+# Blog AI assistance endpoint
+@app.post("/blogs/ai/generate")
+async def generate_blog_content(query: str, user_id: str):
+    """Generate blog content using AI"""
+    try:
+        if not rag_system:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "RAG system not initialized"}
+            )
+        
+        # Generate blog content
+        prompt = f"""Generate a well-structured blog post about the following legal topic: {query}
+        
+        The blog should include:
+        1. A descriptive title
+        2. A concise summary (2-3 sentences)
+        3. A comprehensive main content with proper headings and subheadings
+        4. Focus on Indian legal context where applicable
+        5. Format the content using Markdown with proper headings
+        
+        Make the content informative and accessible to law students and practitioners.
+        """
+        
+        result = await rag_system.query(prompt, use_web=True)
+        
+        # Extract content
+        content = ""
+        if isinstance(result, str):
+            content = result
+        elif result and isinstance(result, dict) and "content" in result:
+            content = result["content"]
+        else:
+            content = "I couldn't generate a blog post. Please try with a different topic."
+        
+        # Log AI generation
+        db.log_user_action(user_id, "generate_blog_ai", {"query": query})
+        
+        # Try to extract title and summary from the generated content
+        title = query
+        summary = ""
+        
+        # Look for a title (Markdown heading)
+        title_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
+        if title_match:
+            title = title_match.group(1).strip()
+        
+        # Look for a summary (typically first paragraph after title)
+        summary_match = re.search(r'^#.+\n\n(.+?)\n\n', content, re.DOTALL)
+        if summary_match:
+            summary = summary_match.group(1).strip()
+        elif len(content.split('\n\n')) > 1:
+            # Just use the first paragraph as summary
+            summary = content.split('\n\n')[1].strip()
+        
+        return {
+            "status": "success",
+            "content": content,
+            "title": title,
+            "summary": summary
+        }
+    except Exception as e:
+        logger.error(f"Error generating blog content: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error generating blog content: {str(e)}"}
         )

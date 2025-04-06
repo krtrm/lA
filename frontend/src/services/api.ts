@@ -31,49 +31,6 @@ export interface StreamStep {
   details?: any;
 }
 
-interface KeywordExtractionRequest {
-  text: string;
-}
-
-interface KeywordExtractionResponse extends BaseResponse {
-  terms: Record<string, string>;
-  count: number;
-}
-
-interface ArgumentGenerationRequest {
-  topic: string;
-  points: string[];
-}
-
-interface ArgumentGenerationResponse extends BaseResponse {
-  argument: string;
-  word_count: number;
-  character_count: number;
-}
-
-interface OutlineGenerationRequest {
-  topic: string;
-  doc_type: string;
-}
-
-interface OutlineGenerationResponse extends BaseResponse {
-  outline: string;
-  section_count: number;
-  subsection_count: number;
-}
-
-interface CitationVerificationRequest {
-  citation: string;
-}
-
-interface CitationVerificationResponse extends BaseResponse {
-  original_citation: string;
-  is_valid: boolean;
-  corrected_citation?: string;
-  summary?: string;
-  error_details?: string;
-}
-
 // Function to handle API errors
 function handleApiError(error: any): never {
   console.error("API Error:", error);
@@ -103,23 +60,20 @@ export const api = {
       });
       
       if (!response.ok) {
-        const errorData = await response.json();
-        throw { response: { data: errorData, status: response.status } };
-      }
-      
-      const responseData = await response.json();
-      
-      // Handle case where response is in {content: xyz} format
-      if (responseData && typeof responseData === 'object' && 'content' in responseData) {
-        return {
-          answer: responseData.content,
-          sources: responseData.sources || [],
-          steps: responseData.steps || []
+        const errorData = await response.json().catch(() => ({}));
+        throw { 
+          status: response.status, 
+          message: errorData.message || `Error: ${response.status} ${response.statusText}` 
         };
       }
       
-      return responseData;
+      const data = await response.json();
+      return data;
     } catch (error) {
+      console.error("API query error:", error);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw { status: 499, message: "Request was cancelled" };
+      }
       throw handleApiError(error);
     } finally {
       controller.abort();
@@ -187,120 +141,10 @@ export const api = {
     } catch (error) {
       onStep({
         type: 'error',
-        content: handleApiError(error).message,
+        content: error instanceof Error ? error.message : String(error),
         timestamp: Date.now()
       });
-    }
-  },
-
-  // Additional API endpoints
-  async extractKeywords(text: string): Promise<KeywordExtractionResponse> {
-    try {
-      const response = await fetch(`${API_BASE_URL}/extract_keywords`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ text }),
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw { response: { data: errorData, status: response.status } };
-      }
-      
-      return await response.json();
-    } catch (error) {
-      throw handleApiError(error);
-    }
-  },
-
-  async generateArgument(topic: string, points: string[]): Promise<ArgumentGenerationResponse> {
-    try {
-      console.log("Generating argument with params:", { topic, points });
-      const response = await fetch(`${API_BASE_URL}/generate_argument`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ topic, points }),
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw { response: { data: errorData, status: response.status } };
-      }
-      
-      const responseData = await response.json();
-      
-      // Handle case where response is in {content: xyz} format
-      if (responseData && typeof responseData === 'object' && 'content' in responseData) {
-        return {
-          status: "success",
-          argument: responseData.content,
-          word_count: responseData.content.split(/\s+/).length,
-          character_count: responseData.content.length
-        };
-      }
-      
-      return responseData;
-    } catch (error) {
-      throw handleApiError(error);
-    }
-  },
-
-  async createOutline(topic: string, doc_type: string): Promise<OutlineGenerationResponse> {
-    try {
-      console.log("Creating outline with params:", { topic, doc_type });
-      const response = await fetch(`${API_BASE_URL}/create_outline`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ topic, doc_type }),
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw { response: { data: errorData, status: response.status } };
-      }
-      
-      const responseData = await response.json();
-      
-      // Handle case where response is in {content: xyz} format
-      if (responseData && typeof responseData === 'object' && 'content' in responseData) {
-        return {
-          status: "success",
-          outline: responseData.content,
-          section_count: 0, // Cannot determine from content field alone
-          subsection_count: 0
-        };
-      }
-      
-      return responseData;
-    } catch (error) {
-      throw handleApiError(error);
-    }
-  },
-
-  async verifyCitation(citation: string): Promise<CitationVerificationResponse> {
-    try {
-      const response = await fetch(`${API_BASE_URL}/verify_citation`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ citation }),
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw { response: { data: errorData, status: response.status } };
-      }
-      
-      return await response.json();
-    } catch (error) {
-      throw handleApiError(error);
+      return () => controller.abort();
     }
   }
 };

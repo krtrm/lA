@@ -1074,6 +1074,9 @@ class LegalRAGSystem:
     """Base RAG system for legal queries with specialized legal document assistance functions"""
     
     def __init__(self, vectorstore):
+        # Store the vectorstore reference directly
+        self.vector_store = vectorstore
+        
         # Use vectorstore retriever
         self.retriever = vectorstore.as_retriever(
             search_type="similarity",
