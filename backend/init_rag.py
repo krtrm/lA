@@ -6,7 +6,7 @@ from dotenv import load_dotenv, find_dotenv
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
 from langchain_openai import OpenAIEmbeddings
-from backend.rag_system import EnhancedLegalRAGSystem
+from rag_system import EnhancedLegalRAGSystem
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

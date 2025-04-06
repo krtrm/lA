@@ -30,4 +30,6 @@ langchain_experimental
 tiktoken
 certifi
 requests
+fastapi
+uvicorn
 pyOpenSSL

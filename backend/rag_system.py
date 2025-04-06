@@ -727,6 +727,35 @@ class WebSearchTool(Tool):
         except Exception as e:
             logger.error(f"Error extracting webpage content: {e}")
             return None
+    
+    async def search_and_process(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+        """Search the web and process the results in one step"""
+        search_results = await self.search_web(query, max_results)
+        if not search_results:
+            return []
+            
+        # Process results concurrently
+        processed_results = []
+        tasks = []
+        
+        for result in search_results[:max_results]:
+            if result.get("url"):
+                tasks.append(self.process_content(result["url"]))
+                
+        # Process in batches for better resource management
+        for i in range(0, len(tasks), self.concurrent_requests):
+            batch = tasks[i:i+self.concurrent_requests]
+            try:
+                batch_results = await asyncio.gather(*batch, return_exceptions=True)
+                for result in batch_results:
+                    if isinstance(result, Exception):
+                        logger.error(f"Error processing content: {result}")
+                    elif result:
+                        processed_results.append(result)
+            except Exception as e:
+                logger.error(f"Error processing batch: {e}")
+                
+        return processed_results
 
 class VectorDBLookupTool(Tool):
     """Tool for retrieving information from the vector database"""
@@ -1041,6 +1070,449 @@ class ToolManager:
                 "quality_score": 0
             }
 
+class LegalRAGSystem:
+    """Base RAG system for legal queries with specialized legal document assistance functions"""
+    
+    def __init__(self, vectorstore):
+        # Use vectorstore retriever
+        self.retriever = vectorstore.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": 8}
+        )
+        
+        # Configure models
+        self.general_llm = ChatGroq(
+            temperature=0.3,
+            model_name="deepseek-r1-distill-llama-70b",
+            max_tokens=4096
+        )
+        
+        # Switch to OpenAI for GPT-4o with reduced token limits
+        self.legal_specialist = ChatOpenAI(
+            temperature=0.1,
+            model_name="gpt-4o-mini",
+            max_tokens=2000,  # Reduced from 4096 to leave more room for input
+            request_timeout=120
+        )
+        
+        # Setup improved prompt with better context handling
+        self.qa_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a legal assistant specializing in Indian law. 
+            Analyze the following legal context and provide a detailed, accurate response with proper citations.
+            
+            If information is not available in the context, clearly state that rather than making up an answer.
+            
+            Use markdown formatting for better readability. When citing cases, use proper citation format.
+            Keep your response concise and focused on answering the user's question directly.
+            """),
+            ("human", "Context:\n{context}\n\nQuestion: {input}")
+        ])
+        
+        # Specialized prompts for different use cases
+        self.keyword_extraction_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a legal terminology expert. Extract and define all key legal terms from the provided text.
+            Format your response as a JSON object where each key is a legal term and each value is its definition.
+            Only include terms that have specific legal meaning. Organize terms in order of importance.
+            
+            Output format should be valid JSON and nothing else:
+            {
+                "term1": "concise definition",
+                "term2": "concise definition",
+                ...
+            }
+            """),
+            ("human", "Text: {input}")
+        ])
+        
+        self.composition_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a legal writing assistant helping to compose structured legal arguments.
+            Create a well-structured argument based on the topic and points provided. 
+            
+            The output should be formatted in markdown and ready to be directly copied into a document.
+            Format headings with proper hierarchy, use bold for emphasis, and include proper citations format.
+            Organize the argument logically with introduction, main points, and conclusion.
+            """),
+            ("human", "Topic: {topic}\n\nPoints to include: {points}\n\nContext: {context}")
+        ])
+        
+        self.outline_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a legal document structure expert. Create a comprehensive outline for a legal document.
+            
+            The outline should follow standard legal document structure appropriate for the document type.
+            Use a clear hierarchical structure with proper markdown formatting:
+            # for main sections
+            ## for subsections
+            ### for sub-subsections
+            
+            Include placeholders in [brackets] where specific information would need to be added.
+            The output should be ready to be directly copied into a document editor.
+            """),
+            ("human", "Document type: {doc_type}\n\nTopic: {topic}\n\nContext: {context}")
+        ])
+        
+        self.citation_verification_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a legal citation verification specialist. Analyze the given citation and verify its accuracy.
+            
+            Check the following:
+            1. Is the citation format correct?
+            2. Does the case exist?
+            3. Is the citation to the appropriate authority?
+            4. Are there any errors in the citation?
+            
+            Provide the corrected citation if needed and a brief summary of the cited case/law.
+            
+            Format your response as JSON:
+            {
+                "original_citation": "the citation as provided",
+                "is_valid": true/false,
+                "corrected_citation": "properly formatted citation if correction needed",
+                "summary": "brief summary of what is being cited",
+                "error_details": "explanation of any errors found"
+            }
+            """),
+            ("human", "Citation: {citation}\n\nContext: {context}")
+        ])
+        
+        # Create chains for each specialized function
+        self.qa_chain = create_stuff_documents_chain(
+            self.legal_specialist, 
+            self.qa_prompt
+        )
+        
+        # Set up token counter with fallback mechanism
+        try:
+            # Try to use the cl100k_base tokenizer which is more reliably available
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+            logger.info("Using cl100k_base tokenizer")
+        except (ImportError, Exception) as e:
+            logger.warning(f"Error loading tiktoken: {e}")
+            # Define a simple fallback tokenizer that estimates tokens
+            self.tokenizer = None
+            logger.info("Using fallback token estimator")
+        
+        # Set maximum tokens for input context (leaving room for model output and prompt)
+        self.max_input_tokens = 15000  # Lower limit for safety
+    
+    # Helper function to count tokens in text
+    def _count_tokens(self, text: str) -> int:
+        """Count the number of tokens in a text string"""
+        if self.tokenizer:
+            try:
+                return len(self.tokenizer.encode(text))
+            except Exception as e:
+                logger.warning(f"Token counting error: {e}")
+                # Fall back to simple estimation
+                return len(text.split()) * 1.5  # Rough estimate
+        else:
+            # Simple estimation: 1 token ~= 4 characters in English
+            return len(text) // 4
+    
+    async def extract_legal_keywords(self, text: str) -> Dict[str, Any]:
+        """
+        Extract key legal terms and their definitions from text.
+        
+        Args:
+            text: The legal text to analyze
+            
+        Returns:
+            Dictionary with extracted terms and their definitions
+        """
+        try:
+            # First retrieve relevant context for better definitions
+            docs = self.retriever.invoke(text[:500])  # Use first part of text for query
+            context_docs = self._select_docs_within_budget(docs, 3000)  # Keep context reasonable
+            context = "\n\n".join([doc.page_content for doc in context_docs])
+            
+            # Create chain for keyword extraction
+            keyword_chain = create_stuff_documents_chain(
+                self.legal_specialist,
+                self.keyword_extraction_prompt
+            )
+            
+            # Get response
+            response = await keyword_chain.ainvoke({
+                "input": text,
+                "context": context
+            })
+            
+            # Extract JSON from response
+            content = response.get("content", "{}")
+            
+            # Try to parse as JSON (clean up if needed)
+            try:
+                import re
+                json_match = re.search(r'({.*})', content, re.DOTALL)
+                if json_match:
+                    content = json_match.group(1)
+                
+                results = json.loads(content)
+                return {
+                    "status": "success",
+                    "terms": results,
+                    "count": len(results)
+                }
+            except json.JSONDecodeError:
+                # If not valid JSON, return the raw text
+                logger.warning("Failed to parse keyword extraction response as JSON")
+                return {
+                    "status": "error",
+                    "error": "Could not parse response",
+                    "raw_response": content,
+                    "terms": {}
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in keyword extraction: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "terms": {}
+            }
+    
+    async def generate_legal_argument(self, topic: str, points: List[str]) -> Dict[str, Any]:
+        """
+        Generate a structured legal argument ready for insertion into documents.
+        
+        Args:
+            topic: The main topic of the legal argument
+            points: Key points to include in the argument
+            
+        Returns:
+            Dictionary with formatted argument text
+        """
+        try:
+            # Get relevant context for the topic
+            docs = self.retriever.invoke(topic)
+            context_docs = self._select_docs_within_budget(docs, 4000)
+            context = "\n\n".join([doc.page_content for doc in context_docs])
+            
+            # Create chain for argument generation
+            composition_chain = create_stuff_documents_chain(
+                self.legal_specialist,
+                self.composition_prompt
+            )
+            
+            # Format points as string
+            points_str = "\n".join([f"- {point}" for point in points])
+            
+            # Get response
+            response = await composition_chain.ainvoke({
+                "topic": topic,
+                "points": points_str,
+                "context": context
+            })
+            
+            # Clean up the response to ensure it's properly formatted for document insertion
+            content = response.get("content", "")
+            
+            return {
+                "status": "success",
+                "argument": content,
+                "word_count": len(content.split()),
+                "character_count": len(content)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating legal argument: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "argument": ""
+            }
+    
+    async def create_document_outline(self, topic: str, doc_type: str) -> Dict[str, Any]:
+        """
+        Create a pre-writing document outline for legal documents.
+        
+        Args:
+            topic: The subject matter of the document
+            doc_type: Type of legal document (e.g., 'brief', 'memo', 'contract', 'petition')
+            
+        Returns:
+            Dictionary with formatted document outline
+        """
+        try:
+            # Get relevant context
+            docs = self.retriever.invoke(f"{doc_type} {topic}")
+            context_docs = self._select_docs_within_budget(docs, 3000)
+            context = "\n\n".join([doc.page_content for doc in context_docs])
+            
+            # Create chain for outline generation
+            outline_chain = create_stuff_documents_chain(
+                self.legal_specialist,
+                self.outline_prompt
+            )
+            
+            # Get response
+            response = await outline_chain.ainvoke({
+                "topic": topic,
+                "doc_type": doc_type,
+                "context": context
+            })
+            
+            content = response.get("content", "")
+            
+            # Structure analysis for reporting
+            section_count = content.count('#')
+            subsection_count = content.count('##') 
+            
+            return {
+                "status": "success",
+                "outline": content,
+                "section_count": section_count,
+                "subsection_count": subsection_count
+            }
+            
+        except Exception as e:
+            logger.error(f"Error creating document outline: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "outline": ""
+            }
+    
+    async def verify_citation(self, citation: str) -> Dict[str, Any]:
+        """
+        Verify legal citations for accuracy and provide summary information.
+        
+        Args:
+            citation: The legal citation to verify
+            
+        Returns:
+            Dictionary with verification results and correction if needed
+        """
+        try:
+            # First check IK API for the citation
+            ik_tool = IKAPITool()
+            
+            # Clean citation to use as search query
+            clean_citation = citation.replace(',', ' ').replace('vs.', 'vs').replace('v.', 'v')
+            
+            # Search for the citation
+            ik_results = await ik_tool.run(clean_citation, max_results=2)
+            
+            # Get context from search results
+            context = ""
+            if ik_results.get("status") == "success" and ik_results.get("results"):
+                for result in ik_results.get("results", []):
+                    context += f"\nTitle: {result.get('title', '')}\n"
+                    context += f"Content excerpt: {result.get('content', '')[:500]}...\n"
+                    context += f"Source: {result.get('source', '')}\n\n"
+            
+            # Also search vector DB
+            docs = self.retriever.invoke(clean_citation)
+            context += "\n\nVector DB Results:\n"
+            for doc in docs[:2]:  # Just use top 2 results
+                context += f"\n{doc.page_content[:500]}...\n"
+            
+            # Create chain for citation verification
+            verification_chain = create_stuff_documents_chain(
+                self.legal_specialist,
+                self.citation_verification_prompt
+            )
+            
+            # Get response
+            response = await verification_chain.ainvoke({
+                "citation": citation,
+                "context": context
+            })
+            
+            # Extract JSON from response
+            content = response.get("content", "{}")
+            
+            # Try to parse as JSON
+            try:
+                import re
+                json_match = re.search(r'({.*})', content, re.DOTALL)
+                if json_match:
+                    content = json_match.group(1)
+                
+                results = json.loads(content)
+                results["status"] = "success"
+                return results
+            except json.JSONDecodeError:
+                # If not valid JSON, return the raw text
+                logger.warning("Failed to parse citation verification response as JSON")
+                return {
+                    "status": "error",
+                    "error": "Could not parse response",
+                    "raw_response": content,
+                    "is_valid": False
+                }
+                
+        except Exception as e:
+            logger.error(f"Error verifying citation: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "is_valid": False
+            }
+
+    def _select_docs_within_budget(self, documents: List[Document], token_budget: int) -> List[Document]:
+        """Select documents to include within token budget"""
+        docs_for_context = []
+        current_tokens = 0
+        
+        # First sort documents by relevance/priority if metadata score exists
+        documents.sort(
+            key=lambda x: x.metadata.get("relevance_score", 0) + x.metadata.get("domain_score", 0), 
+            reverse=True
+        )
+        
+        for doc in documents:
+            doc_tokens = self._count_tokens(doc.page_content)
+            
+            # Skip extremely large documents
+            if doc_tokens > token_budget * 0.8:
+                # Truncate very large documents
+                try:
+                    if self.tokenizer:
+                        max_tokens = int(token_budget * 0.5)  # Use at most 50% of budget for a single doc
+                        truncated_content = self.tokenizer.decode(self.tokenizer.encode(doc.page_content)[:max_tokens])
+                        doc.page_content = truncated_content + "... [content truncated due to length]"
+                    else:
+                        # Simple truncation for fallback case
+                        max_chars = int(token_budget * 0.5 * 4)  # Rough char estimate
+                        doc.page_content = doc.page_content[:max_chars] + "... [content truncated due to length]"
+                except Exception as e:
+                    logger.warning(f"Error truncating document: {e}")
+                    # Simple truncation fallback
+                    doc.page_content = doc.page_content[:5000] + "... [content truncated]"
+                
+                doc_tokens = self._count_tokens(doc.page_content)
+            
+            # Check if adding this document would exceed our budget
+            if current_tokens + doc_tokens > token_budget:
+                # If we already have some docs, stop here
+                if docs_for_context:
+                    break
+                # If this is the first doc, truncate it to fit
+                else:
+                    try:
+                        if self.tokenizer:
+                            max_tokens = token_budget - 100  # Leave a small buffer
+                            truncated_content = self.tokenizer.decode(self.tokenizer.encode(doc.page_content)[:max_tokens])
+                            doc.page_content = truncated_content + "... [content truncated due to length]"
+                        else:
+                            # Simple truncation for fallback case
+                            max_chars = int((token_budget - 100) * 4)  # Rough char estimate
+                            doc.page_content = doc.page_content[:max_chars] + "... [content truncated due to length]"
+                    except Exception as e:
+                        logger.warning(f"Error truncating document: {e}")
+                        # Simple truncation fallback
+                        doc.page_content = doc.page_content[:3000] + "... [content truncated]"
+                    
+                    doc_tokens = self._count_tokens(doc.page_content)
+            
+            docs_for_context.append(doc)
+            current_tokens += doc_tokens
+            
+            # If we've exceeded 70% of our budget, stop adding more
+            if current_tokens > token_budget * 0.7:
+                break
+        
+        return docs_for_context
+
 class EnhancedLegalRAGSystem(LegalRAGSystem):
     """Advanced RAG system with tool-based architecture"""
     
@@ -1064,14 +1536,74 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
         
         # Cache for results
         self.cache = {}
+        
+        # Add classifier prompt for determining tool necessity
+        self.tool_necessity_prompt = ChatPromptTemplate.from_template("""
+        Determine if the user's query requires specialized tools to answer or is a simple greeting/chitchat.
+        
+        User query: {query}
+        
+        First, analyze if this query:
+        1. Is a greeting (like "hi", "hello", "good morning")
+        2. Is simple chitchat (like "how are you", "what's up")
+        3. Requires no factual information to answer
+        4. Can be handled with general knowledge without research
+        
+        If ANY of the above are true, respond with "NO_TOOLS_NEEDED".
+        If the query requires legal information, research, or specific knowledge, respond with "TOOLS_REQUIRED".
+        
+        Respond with ONLY one of these two options and no other text.
+        """)
+    
+    async def _needs_tools(self, query: str) -> bool:
+        """Determine if a query needs tools or can be answered directly"""
+        try:
+            # Skip classifier for obviously complex queries
+            if len(query.split()) > 10:
+                return True
+                
+            prompt_val = self.tool_necessity_prompt.format_messages(query=query)
+            response = await self.planning_llm.ainvoke(prompt_val)
+            result = response.content.strip().upper()
+            
+            logger.info(f"Query tool necessity classifier result: {result}")
+            return "TOOLS_REQUIRED" in result
+        except Exception as e:
+            logger.warning(f"Error in tools necessity check: {e}, defaulting to simple response")
+            # If very short query and classifier failed, likely simple
+            return len(query.split()) > 5
+    
+    async def generate_simple_response(self, query: str) -> Dict[str, str]:
+        """Generate a response for simple queries without using tools"""
+        try:
+            # Simple template for non-research queries
+            simple_prompt = ChatPromptTemplate.from_messages([
+                ("system", """You are a friendly legal assistant. For simple greetings and chitchat, 
+                respond politely but keep it brief. Don't pretend to use any tools or research for simple interactions.
+                If the user is asking a more complex question that would benefit from research, indicate that you 
+                could help them with that topic if they'd like to explore it further."""),
+                ("human", "{query}")
+            ])
+            
+            prompt_val = simple_prompt.format_messages(query=query)
+            response = await self.legal_specialist.ainvoke(prompt_val)
+            return {"content": response.content}
+        except Exception as e:
+            logger.error(f"Error generating simple response: {e}")
+            return {"content": "Hello! How can I assist you with legal information today?"}
     
     async def query(self, question: str, use_web: bool = True):
         try:
-            # 1. Planning phase - determine which tools to use
+            # 1. First check if the query even needs tools
+            if not await self._needs_tools(question):
+                logger.info(f"Query classified as simple, skipping tools: '{question}'")
+                return await self.generate_simple_response(question)
+                
+            # 2. Planning phase - determine which tools to use
             plan = await self.tool_manager.create_plan(question)
             logger.info(f"Created plan: {plan['plan']}")
             
-            # 2. Tool execution phase
+            # 3. Tool execution phase
             all_results = []
             valuable_content = []
             
@@ -1101,13 +1633,13 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
                                     valuable_content.append(result)
                                     logger.info(f"Marked content from {result.get('source', 'unknown')} for indexing (score: {evaluation.get('quality_score', 0)})")
             
-            # 3. Index valuable content if any
+            # 4. Index valuable content if any
             if valuable_content:
                 logger.info(f"Indexing {len(valuable_content)} valuable pieces of content")
                 indexing_result = await self.tool_manager.execute_tool("pinecone_indexer", content=valuable_content)
                 logger.info(f"Indexing result: {indexing_result}")
             
-            # 4. Convert to Document objects for final response generation
+            # 5. Convert to Document objects for final response generation
             documents = []
             for result in all_results:
                 if not result.get("content"):
@@ -1125,7 +1657,7 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
                     )
                 )
             
-            # 5. Manage token count
+            # 6. Manage token count
             token_budget = self.max_input_tokens
             question_tokens = self._count_tokens(question)
             token_budget -= question_tokens
@@ -1142,7 +1674,7 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
             # Select documents to include within token budget
             docs_for_context = self._select_docs_within_budget(documents, token_budget)
             
-            # 6. Generate response
+            # 7. Generate response
             logger.info(f"Generating response with {len(docs_for_context)} documents")
             return await self.qa_chain.ainvoke({
                 "input": question,
@@ -1576,251 +2108,35 @@ class WebRetriever:
         except Exception as e:
             logger.error(f"Error extracting webpage content: {e}")
             return None
-
-class LegalRAGSystem:
-    """Base RAG system for legal queries"""
     
-    def __init__(self, vectorstore):
-        # Use vectorstore retriever
-        self.retriever = vectorstore.as_retriever(
-            search_type="similarity",
-            search_kwargs={"k": 8}
-        )
-        
-        # Configure models
-        self.general_llm = ChatGroq(
-            temperature=0.3,
-            model_name="deepseek-r1-distill-llama-70b",
-            max_tokens=4096
-        )
-        
-        # Switch to OpenAI for GPT-4o with reduced token limits
-        self.legal_specialist = ChatOpenAI(
-            temperature=0.1,
-            model_name="gpt-4o-mini",
-            max_tokens=2000,  # Reduced from 4096 to leave more room for input
-            request_timeout=120
-        )
-        
-        # Setup improved prompt with better context handling
-        self.qa_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a legal assistant specializing in Indian law. 
-            Analyze the following legal context and provide a detailed, accurate response with proper citations.
+    async def search_and_process(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+        """Search the web and process the results in one step"""
+        search_results = await self.search_web(query, max_results)
+        if not search_results:
+            return []
             
-            If information is not available in the context, clearly state that rather than making up an answer.
-            
-            Use markdown formatting for better readability. When citing cases, use proper citation format.
-            Keep your response concise and focused on answering the user's question directly.
-            """),
-            ("human", "Context:\n{context}\n\nQuestion: {input}")
-        ])
+        # Process results concurrently
+        processed_results = []
+        tasks = []
         
-        # Create chain
-        self.qa_chain = create_stuff_documents_chain(
-            self.legal_specialist, 
-            self.qa_prompt
-        )
-        
-        # Set up token counter with fallback mechanism
-        try:
-            # Try to use the cl100k_base tokenizer which is more reliably available
-            self.tokenizer = tiktoken.get_encoding("cl100k_base")
-            logger.info("Using cl100k_base tokenizer")
-        except (ImportError, Exception) as e:
-            logger.warning(f"Error loading tiktoken: {e}")
-            # Define a simple fallback tokenizer that estimates tokens
-            self.tokenizer = None
-            logger.info("Using fallback token estimator")
-        
-        # Set maximum tokens for input context (leaving room for model output and prompt)
-        self.max_input_tokens = 15000  # Lower limit for safety
-    
-    # Helper function to count tokens in text
-    def _count_tokens(self, text: str) -> int:
-        """Count the number of tokens in a text string"""
-        if self.tokenizer:
-            try:
-                return len(self.tokenizer.encode(text))
-            except Exception as e:
-                logger.warning(f"Token counting error: {e}")
-                # Fall back to simple estimation
-                return len(text.split()) * 1.5  # Rough estimate
-        else:
-            # Simple estimation: 1 token ~= 4 characters in English
-            return len(text) // 4
-
-class EnhancedLegalRAGSystem(LegalRAGSystem):
-    """Advanced RAG system with web search and multimedia capabilities"""
-    
-    def __init__(self, vectorstore, enable_web=True):
-        super().__init__(vectorstore)
-        self.web_retriever = WebRetriever()
-        self.enable_web = enable_web
-        self.cache = {}
-        self.ik_api = IKAPIWrapper()
-    
-    async def query(self, question: str, use_web: bool = True):
-        # Check vector DB first - if we have enough results, we might not need web search
-        local_docs = self.retriever.invoke(question)
-        have_sufficient_local_docs = len(local_docs) >= 5
-        
-        web_docs = []
-        if self.enable_web and use_web and not have_sufficient_local_docs:
-            # Generate optimized search queries - but limit to 1-2 queries max
-            try:
-                # Check cache first for efficiency
-                cache_key = question.lower()
-                if cache_key in self.cache:
-                    logger.info("Using cached web results")
-                    web_docs = self.cache[cache_key]
-                else:
-                    # Create a more targeted search query
-                    if "rti" in question.lower():
-                        search_query = "RTI filing procedure India official"
-                    else:
-                        # Generate a single optimized query
-                        search_prompt = ChatPromptTemplate.from_template(
-                            "Create ONE specific search query to find information about: {question}. "
-                            "Focus on Indian legal context. Return only the search query text, nothing else."
-                        )
-                        chain = search_prompt | self.general_llm
-                        result = chain.invoke({"question": question})
-                        search_query = result.content.strip().strip('"\'')
-                    
-                    logger.info(f"Using optimized search query: {search_query}")
-                    
-                    # Process the search query
-                    results = await self.web_retriever.search_and_process(search_query)
-                    
-                    # If we don't have enough results, try a second query
-                    if len(results) < 3:
-                        # Create a more general fallback query
-                        fallback_query = question.replace("?", "")
-                        additional_results = await self.web_retriever.search_and_process(fallback_query)
-                        
-                        # Add new results only
-                        seen_urls = {r.get("source") for r in results}
-                        for res in additional_results:
-                            if res.get("source") not in seen_urls:
-                                results.append(res)
-                                seen_urls.add(res.get("source"))
-                    
-                    # Cache the results
-                    self.cache[cache_key] = results
-                    web_docs = results
-            except Exception as e:
-                logger.error(f"Error in web retrieval: {e}")
-                # Continue with whatever local docs we have
-        
-        # Convert web results to Document objects
-        web_documents = []
-        for doc in web_docs:
-            web_documents.append(
-                Document(
-                    page_content=doc.get("content", ""),
-                    metadata={
-                        "source": doc.get("source", ""),
-                        "title": doc.get("title", ""),
-                        "domain": doc.get("domain", ""),
-                        "type": doc.get("type", "web")
-                    }
-                )
-            )
-        
-        # Combine and rank all documents
-        all_docs = local_docs + web_documents
-        ranked_docs = self._rank_documents(question, all_docs)
-        
-        # NEW: Manage token count to avoid rate limits
-        token_budget = self.max_input_tokens
-        question_tokens = self._count_tokens(question)
-        token_budget -= question_tokens
-        
-        # Calculate tokens for prompt template (fixed approximation)
-        # Instead of trying to access message components directly, use a simpler approach
-        system_prompt = "You are a legal assistant specializing in Indian law. Analyze the following legal context and provide a detailed, accurate response with proper citations."
-        human_prompt_template = "Context:\n{context}\n\nQuestion: {input}"
-        prompt_template_tokens = self._count_tokens(system_prompt) + self._count_tokens(human_prompt_template)
-        token_budget -= prompt_template_tokens
-        
-        # Reserve tokens for the model's response
-        token_budget -= 2000  # Response tokens
-        
-        # Calculate how many documents we can include
-        docs_for_context = []
-        current_tokens = 0
-        
-        for doc in ranked_docs:
-            doc_tokens = self._count_tokens(doc.page_content)
-            
-            # Skip extremely large documents
-            if doc_tokens > token_budget * 0.8:
-                # Truncate very large documents
-                try:
-                    if self.tokenizer:
-                        max_tokens = int(token_budget * 0.5)  # Use at most 50% of budget for a single doc
-                        truncated_content = self.tokenizer.decode(self.tokenizer.encode(doc.page_content)[:max_tokens])
-                        doc.page_content = truncated_content + "... [content truncated due to length]"
-                    else:
-                        # Simple truncation for fallback case
-                        max_chars = int(token_budget * 0.5 * 4)  # Rough char estimate
-                        doc.page_content = doc.page_content[:max_chars] + "... [content truncated due to length]"
-                except Exception as e:
-                    logger.warning(f"Error truncating document: {e}")
-                    # Simple truncation fallback
-                    doc.page_content = doc.page_content[:5000] + "... [content truncated]"
+        for result in search_results[:max_results]:
+            if result.get("url"):
+                tasks.append(self.process_content(result["url"]))
                 
-                doc_tokens = self._count_tokens(doc.page_content)
-            
-            # Check if adding this document would exceed our budget
-            if current_tokens + doc_tokens > token_budget:
-                # If we already have some docs, stop here
-                if docs_for_context:
-                    break
-                # If this is the first doc, truncate it to fit
-                else:
-                    try:
-                        if self.tokenizer:
-                            max_tokens = token_budget - 100  # Leave a small buffer
-                            truncated_content = self.tokenizer.decode(self.tokenizer.encode(doc.page_content)[:max_tokens])
-                            doc.page_content = truncated_content + "... [content truncated due to length]"
-                        else:
-                            # Simple truncation for fallback case
-                            max_chars = int((token_budget - 100) * 4)  # Rough char estimate
-                            doc.page_content = doc.page_content[:max_chars] + "... [content truncated due to length]"
-                    except Exception as e:
-                        logger.warning(f"Error truncating document: {e}")
-                        # Simple truncation fallback
-                        doc.page_content = doc.page_content[:3000] + "... [content truncated]"
-                    
-                    doc_tokens = self._count_tokens(doc.page_content)
-            
-            docs_for_context.append(doc)
-            current_tokens += doc_tokens
-            
-            # If we've exceeded 70% of our budget, stop adding more
-            if current_tokens > token_budget * 0.7:
-                break
-        
-        logger.info(f"Using {current_tokens} tokens for context out of {self.max_input_tokens} maximum")
-        logger.info(f"Selected {len(docs_for_context)} documents out of {len(ranked_docs)} available")
-        
-        # Generate response with token-managed context
-        try:
-            return await self.qa_chain.ainvoke({
-                "input": question,
-                "context": docs_for_context
-            })
-        except Exception as e:
-            logger.error(f"Error generating response: {e}")
-            # Attempt a more reliable fallback with even fewer docs if needed
-            if len(docs_for_context) > 2:
-                logger.info("Trying fallback with fewer documents")
-                return await self.qa_chain.ainvoke({
-                    "input": question,
-                    "context": docs_for_context[:2]  # Use only top 2 docs
-                })
-            raise  # Re-raise the exception if we can't recover
+        # Process in batches for better resource management
+        for i in range(0, len(tasks), self.concurrent_requests):
+            batch = tasks[i:i+self.concurrent_requests]
+            try:
+                batch_results = await asyncio.gather(*batch, return_exceptions=True)
+                for result in batch_results:
+                    if isinstance(result, Exception):
+                        logger.error(f"Error processing content: {result}")
+                    elif result:
+                        processed_results.append(result)
+            except Exception as e:
+                logger.error(f"Error processing batch: {e}")
+                
+        return processed_results
     
     def _rank_documents(self, question: str, docs: List[Document]) -> List[Document]:
         """Rank documents by relevance and source authority"""
