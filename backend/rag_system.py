@@ -1892,4 +1892,3 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
         except Exception as e:
             logger.error(f"Error in semantic similarity: {e}")
             return 0.0
-``` 
