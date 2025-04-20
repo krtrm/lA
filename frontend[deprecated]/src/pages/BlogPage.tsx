@@ -1,74 +1,105 @@
-import React, { useState, useEffect } from 'react';
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useUser } from '@clerk/clerk-react';
 import { motion } from 'framer-motion';
 import { useApi } from '../context/ApiContext';
 import { 
-  BookOpen, Calendar, User, Clock, Heart, MessageSquare, Edit, 
-  Trash2, ArrowLeft, Send, CheckVerified, Share
+  Heart, MessageSquare, Clock, Check, Calendar, User, Edit, 
+  Trash2, ArrowLeft, Send, Share
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
 
-export default function BlogPage() {
-  const { id } = useParams();
+// Define types
+interface BlogType {
+  blog_id: string;
+  title: string;
+  summary: string;
+  content: string;
+  author: string;
+  published_at: string;
+  read_time_minutes: number;
+  likes: number;
+  comment_count: number;
+  tags: string[];
+  category: string;
+  is_official: boolean;
+  source_name: string;
+  user_id: string;
+  comments: CommentType[];
+}
+
+interface CommentType {
+  user_id: string;
+  comment: string;
+  timestamp: string;
+}
+
+const BlogPage = () => {
+  const { blogId } = useParams<{ blogId: string }>();
   const navigate = useNavigate();
   const { user } = useUser();
-  const { getBlog, likeBlog, addBlogComment, deleteBlog, isLoading, error } = useApi();
-  const [blog, setBlog] = useState(null);
-  const [comment, setComment] = useState('');
+  const { fetchBlogById, likeBlog, commentOnBlog, deleteBlog, isLoading, error } = useApi();
+  
+  const [blog, setBlog] = useState<BlogType | null>(null);
+  const [isLiked, setIsLiked] = useState(false);
+  const [commentText, setCommentText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
   useEffect(() => {
-    const fetchBlog = async () => {
-      if (id) {
-        try {
-          const response = await getBlog(parseInt(id));
-          if (response && response.blog) {
-            setBlog(response.blog);
-          }
-        } catch (err) {
-          console.error('Error fetching blog:', err);
+    const loadBlog = async () => {
+      try {
+        if (blogId) {
+          const data = await fetchBlogById(blogId);
+          setBlog(data);
         }
+      } catch (error) {
+        console.error('Error fetching blog:', error);
       }
     };
-
-    fetchBlog();
-  }, [id, getBlog]);
-
-  const handleLike = async () => {
-    if (!blog) return;
     
+    loadBlog();
+  }, [blogId, fetchBlogById]);
+
+  const handleLike = async (e: React.MouseEvent) => {
+    e.preventDefault();
     try {
-      await likeBlog(blog.blog_id);
-      // Update the blog like count locally
-      setBlog(prev => ({ ...prev, likes: (prev.likes || 0) + 1 }));
-    } catch (err) {
-      console.error('Error liking blog:', err);
+      if (blog) {
+        await likeBlog(blog.blog_id);
+        setIsLiked(true);
+        setBlog(prev => prev ? {
+          ...prev,
+          likes: prev.likes + 1
+        } : null);
+      }
+    } catch (error) {
+      console.error('Error liking blog:', error);
     }
   };
 
-  const handleSubmitComment = async (e) => {
-    e.preventDefault();
-    if (!comment.trim() || !blog) return;
-    
-    setSubmitting(true);
+  const handleComment = async () => {
     try {
-      const response = await addBlogComment(blog.blog_id, comment);
-      if (response && response.comment) {
-        // Add the new comment to the blog comments
-        setBlog(prev => ({
+      if (blog && commentText.trim() !== '') {
+        await commentOnBlog(blog.blog_id, commentText);
+        setBlog(prev => prev ? {
           ...prev,
-          comments: [response.comment, ...(prev.comments || [])],
-          comment_count: ((prev.comment_count || 0) + 1)
-        }));
-        setComment('');
+          comment_count: prev.comment_count + 1,
+          comments: [
+            ...(prev.comments || []),
+            {
+              user_id: 'current-user', // Replace with actual user ID
+              comment: commentText,
+              timestamp: new Date().toISOString()
+            }
+          ]
+        } : null);
+        setCommentText('');
       }
-    } catch (err) {
-      console.error('Error adding comment:', err);
-    } finally {
-      setSubmitting(false);
+    } catch (error) {
+      console.error('Error commenting on blog:', error);
     }
   };
 
@@ -174,7 +205,7 @@ export default function BlogPage() {
             )}
             {blog.is_official && (
               <span className="flex items-center px-3 py-1 text-xs font-medium rounded-full bg-green-500/20 text-green-400">
-                <CheckVerified className="h-3 w-3 mr-1" />
+                <Check className="h-3 w-3 mr-1" />
                 Verified
               </span>
             )}
@@ -303,11 +334,11 @@ export default function BlogPage() {
 
           {/* Comment form */}
           {user ? (
-            <form onSubmit={handleSubmitComment} className="mb-8">
+            <form onSubmit={handleComment} className="mb-8">
               <div className="mb-4">
                 <textarea
-                  value={comment}
-                  onChange={(e) => setComment(e.target.value)}
+                  value={commentText}
+                  onChange={(e) => setCommentText(e.target.value)}
                   placeholder="Share your thoughts..."
                   className="input-field min-h-[100px]"
                   disabled={submitting}
@@ -316,7 +347,7 @@ export default function BlogPage() {
               <button 
                 type="submit" 
                 className="button-primary"
-                disabled={submitting || !comment.trim()}
+                disabled={submitting || !commentText.trim()}
               >
                 {submitting ? (
                   <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full mr-2"></div>
@@ -389,4 +420,6 @@ export default function BlogPage() {
       )}
     </div>
   );
-}
+};
+
+export default BlogPage;

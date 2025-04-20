@@ -1,12 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { useUser } from '@clerk/clerk-react';
 import { useApi } from '../context/ApiContext';
 import { ArrowLeft, Save, Eye, Wand, X, Plus, Tag, Loader } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { Textarea } from '../components/ui/textarea';
 
-export default function BlogEditorPage() {
+const BlogEditorPage = () => {
   const { id } = useParams(); // If editing existing blog
   const { user } = useUser();
   const navigate = useNavigate();
@@ -230,7 +233,7 @@ export default function BlogEditorPage() {
               <label className="block text-white/70 text-sm mb-2">
                 Title*
               </label>
-              <input
+              <Input
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
@@ -245,7 +248,7 @@ export default function BlogEditorPage() {
               <label className="block text-white/70 text-sm mb-2">
                 Summary (optional)
               </label>
-              <textarea
+              <Textarea
                 value={summary}
                 onChange={(e) => setSummary(e.target.value)}
                 placeholder="A brief overview of your article (2-3 sentences)"
@@ -261,7 +264,7 @@ export default function BlogEditorPage() {
                   <label className="block text-white/70 text-sm mb-2">
                     Category (optional)
                   </label>
-                  <input
+                  <Input
                     type="text"
                     value={category}
                     onChange={(e) => setCategory(e.target.value)}
@@ -274,7 +277,7 @@ export default function BlogEditorPage() {
                     Tags (optional)
                   </label>
                   <div className="flex">
-                    <input
+                    <Input
                       type="text"
                       value={currentTag}
                       onChange={(e) => setCurrentTag(e.target.value)}
@@ -282,13 +285,13 @@ export default function BlogEditorPage() {
                       placeholder="Add a tag"
                       className="input-field flex-grow"
                     />
-                    <button 
+                    <Button 
                       onClick={handleAddTag}
                       className="button-secondary ml-2"
                       type="button"
                     >
                       <Plus className="h-4 w-4" />
-                    </button>
+                    </Button>
                   </div>
                   <div className="flex flex-wrap gap-2 mt-3">
                     {tags.map((tag, index) => (
@@ -315,7 +318,7 @@ export default function BlogEditorPage() {
                 Generate Content with AI
               </label>
               <div className="flex mb-3">
-                <input
+                <Input
                   type="text"
                   value={aiPrompt}
                   onChange={(e) => setAiPrompt(e.target.value)}
@@ -323,7 +326,7 @@ export default function BlogEditorPage() {
                   className="input-field flex-grow"
                   disabled={generating}
                 />
-                <button 
+                <Button 
                   onClick={handleGenerateContent}
                   disabled={generating || !aiPrompt.trim()}
                   className={`button-primary ml-2 ${(generating || !aiPrompt.trim()) ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -340,7 +343,7 @@ export default function BlogEditorPage() {
                       Generate
                     </>
                   )}
-                </button>
+                </Button>
               </div>
               <p className="text-xs text-white/50">
                 Our AI will help you create a well-structured article on your chosen legal topic
@@ -352,7 +355,7 @@ export default function BlogEditorPage() {
               <label className="block text-white/70 text-sm mb-2">
                 Content* (Markdown supported)
               </label>
-              <textarea
+              <Textarea
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 placeholder="# Start writing your article here..."
@@ -368,7 +371,7 @@ export default function BlogEditorPage() {
             {/* Publishing options */}
             <div className="glass-effect rounded-xl p-6">
               <div className="flex items-center">
-                <input
+                <Input
                   type="checkbox"
                   id="publish"
                   checked={published}
@@ -388,4 +391,6 @@ export default function BlogEditorPage() {
       </div>
     </div>
   );
-}
+};
+
+export default BlogEditorPage;

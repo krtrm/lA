@@ -10,7 +10,7 @@ load_dotenv()
 
 # Configure the app
 st.set_page_config(
-    page_title="Vaqeel - Legal AI Assistant",
+    page_title="LegalEase - Legal AI Assistant",
     page_icon="⚖️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -113,20 +113,80 @@ if 'chat_history' not in st.session_state:
 if 'current_tab' not in st.session_state:
     st.session_state.current_tab = "Chat"
 
+# Add this callback function to handle query submission and reset
+def submit_query():
+    if st.session_state.query_input:
+        st.session_state.submitted_query = st.session_state.query_input
+        # Don't try to reset the input field directly here
+
+# Modify the chat query handling function
+def handle_chat_query():
+    if st.session_state.get('submitted_query'):
+        query = st.session_state.submitted_query
+        # Clear the submitted query so we don't process it again
+        st.session_state.submitted_query = ""
+        web_search = st.session_state.get('web_search', True)
+        with st.spinner("LegalEase is researching your question..."):
+            try:
+                response = requests.post(
+                    f"{API_URL}/query/stream",
+                    json={"query": query, "use_web": web_search, "stream_thinking": True},
+                    stream=True,
+                    timeout=60
+                )
+                thinking_placeholder = st.empty()
+                answer = ""
+                sources = []
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    step = json.loads(line.decode('utf-8'))
+                    t = step.get('type')
+                    c = step.get('content', '')
+                    if t in ['thinking','planning','tool_use','retrieval','generation']:
+                        thinking_placeholder.text(f"{t.capitalize()}: {c}")
+                    elif t == 'complete':
+                        answer = c
+                        # Handle cases where details might be None
+                        details = step.get('details', {})
+                        if details is not None:
+                            sources = details.get('sources', []) or []
+                        break
+                    elif t == 'error':
+                        thinking_placeholder.text(f"Error: {c}")
+                        break
+                
+                # Add the response to chat history
+                st.session_state.chat_history.append({
+                    "role": "user", 
+                    "content": query
+                })
+                
+                if answer:
+                    st.session_state.chat_history.append({
+                        "role": "assistant", 
+                        "content": answer, 
+                        "sources": sources
+                    })
+                else:
+                    st.error("No response received from the AI.")
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
+
 # App header
-st.markdown("<h1 class='main-header'>Vaqeel.app</h1>", unsafe_allow_html=True)
+st.markdown("<h1 class='main-header'>LegalEase.app</h1>", unsafe_allow_html=True)
 st.markdown("<p class='subheader'>Your AI Legal Assistant for Indian Law</p>", unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/1159/1159356.png", width=100)
-    st.markdown("## About Vaqeel")
+    st.markdown("## About LegalEase")
     st.markdown("""
-    Vaqeel is an AI legal assistant trained on Indian law. 
+    LegalEase is an AI legal assistant trained on Indian law. 
     It can help with legal research, explain legal concepts, and 
     provide information on laws and cases.
     
-    **Disclaimer:** Vaqeel provides information for educational purposes only. 
+    **Disclaimer:** LegalEase provides information for educational purposes only. 
     It is not a substitute for professional legal advice.
     """)
     
@@ -152,7 +212,7 @@ with st.sidebar:
     if selected_function == "Chat":
         st.markdown("### Chat Settings")
         web_search = st.checkbox("Enable web search", value=True, 
-                            help="When enabled, Vaqeel will search the web for the most up-to-date information")
+                            help="When enabled, LegalEase will search the web for the most up-to-date information")
         
         st.markdown("---")
         st.markdown("### Sample Questions")
@@ -178,49 +238,14 @@ if st.session_state.current_tab == "Chat":
 
     col1, col2 = st.columns([1, 5])
     with col1:
-        submit_button = st.button("Ask Vaqeel", type="primary")
+        submit_button = st.button("Ask LegalEase", type="primary", on_click=submit_query)
 
     if 'current_question' in st.session_state:
         del st.session_state.current_question
 
-    # Process the query
-    if submit_button and query:
-        # Add user query to chat history
-        st.session_state.chat_history.append({"role": "user", "content": query})
-        
-        # Display a spinner while waiting for the response
-        with st.spinner("Vaqeel is researching your question..."):
-            try:
-                # Call the API
-                response = requests.post(
-                    f"{API_URL}/query",
-                    json={"query": query, "use_web": web_search},
-                    timeout=60
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    answer = data["answer"]
-                    sources = data.get("sources", [])
-                    
-                    # Add response to chat history
-                    st.session_state.chat_history.append({
-                        "role": "assistant", 
-                        "content": answer,
-                        "sources": sources
-                    })
-                else:
-                    st.error(f"Error: {response.status_code} - {response.text}")
-                    st.session_state.chat_history.append({
-                        "role": "assistant", 
-                        "content": f"I encountered an error while researching your question. Please try again later."
-                    })
-            except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
-                st.session_state.chat_history.append({
-                    "role": "assistant", 
-                    "content": f"I encountered an error while researching your question. Please try again later."
-                })
+    # Process the query - call handle_chat_query on each render to process any submitted queries
+    if st.session_state.get('submitted_query'):
+        handle_chat_query()
 
     # Display chat history
     if st.session_state.chat_history:
@@ -230,7 +255,7 @@ if st.session_state.current_tab == "Chat":
                 st.markdown(f"**You:** {message['content']}")
             else:
                 st.markdown("<div class='response-container'>", unsafe_allow_html=True)
-                st.markdown(f"**Vaqeel:** {message['content']}")
+                st.markdown(f"**LegalEase:** {message['content']}")
                 
                 # Display sources if available
                 if "sources" in message and message["sources"]:
@@ -252,6 +277,7 @@ if st.session_state.current_tab == "Chat":
             st.session_state.chat_history = []
             st.experimental_rerun()
 
+# Update Keyword Extraction to streaming
 elif st.session_state.current_tab == "Legal Keyword Extraction":
     st.markdown("### Legal Keyword Extraction")
     st.markdown("""
@@ -267,27 +293,37 @@ elif st.session_state.current_tab == "Legal Keyword Extraction":
         with st.spinner("Extracting legal keywords..."):
             try:
                 response = requests.post(
-                    f"{API_URL}/extract_keywords",
+                    f"{API_URL}/extract_keywords/stream",
                     json={"text": legal_text},
+                    stream=True,
                     timeout=60
                 )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    terms = data.get("terms", {})
-                    
-                    if terms:
-                        st.success(f"Found {len(terms)} legal terms!")
-                        
-                        # Display terms in a nice format
-                        st.markdown("### Extracted Legal Terms")
-                        for term, definition in terms.items():
-                            st.markdown(f"""
-                            <div class='keyword-box'>
-                                <div class='term'>{term}</div>
-                                <div class='definition'>{definition}</div>
-                            </div>
-                            """, unsafe_allow_html=True)
+                thinking_placeholder = st.empty()
+                terms = {}
+                for line in response.iter_lines():
+                    if not line: continue
+                    step = json.loads(line.decode('utf-8'))
+                    if step.get('type') in ['thinking','retrieval','generation']:
+                        thinking_placeholder.text(f"{step['type'].capitalize()}: {step['content']}")
+                    elif step.get('type') == 'complete':
+                        details = step.get('details', {})
+                        terms = details.get('terms', {})
+                        break
+                    elif step.get('type') == 'error':
+                        thinking_placeholder.text(f"Error: {step['content']}")
+                        break
+                # Display results
+                if terms:
+                    st.success(f"Found {len(terms)} legal terms!")
+                    # Display terms in a nice format
+                    st.markdown("### Extracted Legal Terms")
+                    for term, definition in terms.items():
+                        st.markdown(f"""
+                        <div class='keyword-box'>
+                            <div class='term'>{term}</div>
+                            <div class='definition'>{definition}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
                         
                         # Add a download button
                         terms_json = json.dumps(terms, indent=2)
@@ -297,18 +333,17 @@ elif st.session_state.current_tab == "Legal Keyword Extraction":
                             file_name="legal_terms.json",
                             mime="application/json"
                         )
-                    else:
-                        st.info("No specialized legal terms were found in the text.")
                 else:
-                    st.error(f"Error: {response.status_code} - {response.text}")
+                    st.info("No specialized legal terms were found in the text.")
             except Exception as e:
                 st.error(f"An error occurred: {str(e)}")
 
+# Update Argument Composer to streaming
 elif st.session_state.current_tab == "Legal Argument Composer":
     st.markdown("### Legal Argument Composer")
     st.markdown("""
     Generate structured legal arguments ready to paste into your documents.
-    Provide a topic and key points to include, and Vaqeel will compose a coherent legal argument.
+    Provide a topic and key points to include, and LegalEase will compose a coherent legal argument.
     """)
     
     topic = st.text_input("Main legal topic or issue:", key="argument_topic")
@@ -343,37 +378,37 @@ elif st.session_state.current_tab == "Legal Argument Composer":
             with st.spinner("Composing legal argument..."):
                 try:
                     response = requests.post(
-                        f"{API_URL}/generate_argument",
+                        f"{API_URL}/generate_argument/stream",
                         json={"topic": topic, "points": points},
+                        stream=True,
                         timeout=90
                     )
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        argument = data.get("argument", "")
-                        
-                        if argument:
-                            st.markdown("### Generated Legal Argument")
-                            st.markdown(argument)
-                            
-                            # Add copy and download buttons
-                            st.download_button(
-                                label="Download as Markdown",
-                                data=argument,
-                                file_name="legal_argument.md",
-                                mime="text/markdown"
-                            )
-                            
-                            # Word count info
-                            word_count = data.get("word_count", len(argument.split()))
-                            st.info(f"Argument length: {word_count} words")
-                        else:
-                            st.info("Could not generate an argument with the provided information.")
+                    thinking_placeholder = st.empty()
+                    argument = ""
+                    for line in response.iter_lines():
+                        if not line: continue
+                        step = json.loads(line.decode('utf-8'))
+                        if step.get('type') in ['thinking','retrieval','generation']:
+                            thinking_placeholder.text(f"{step['type'].capitalize()}: {step['content']}")
+                        elif step.get('type') == 'complete':
+                            argument = step.get('content', '')
+                            details = step.get('details', {})
+                            break
+                        elif step.get('type') == 'error':
+                            thinking_placeholder.text(f"Error: {step['content']}")
+                            break
+                    if argument:
+                        st.markdown("### Generated Legal Argument")
+                        st.markdown(argument)
+                        st.download_button(label="Download as Markdown", data=argument, file_name="legal_argument.md", mime="text/markdown")
+                        word_count = details.get('word_count', len(argument.split()))
+                        st.info(f"Argument length: {word_count} words")
                     else:
-                        st.error(f"Error: {response.status_code} - {response.text}")
+                        st.info("Could not generate an argument with the provided information.")
                 except Exception as e:
                     st.error(f"An error occurred: {str(e)}")
 
+# Update Outline Generator to streaming
 elif st.session_state.current_tab == "Document Outline Generator":
     st.markdown("### Document Outline Generator")
     st.markdown("""
@@ -395,40 +430,36 @@ elif st.session_state.current_tab == "Document Outline Generator":
         with st.spinner("Generating document outline..."):
             try:
                 response = requests.post(
-                    f"{API_URL}/create_outline",
+                    f"{API_URL}/create_outline/stream",
                     json={"topic": outline_topic, "doc_type": doc_type},
+                    stream=True,
                     timeout=60
                 )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    outline = data.get("outline", "")
-                    
-                    if outline:
-                        st.markdown("### Document Outline")
-                        st.markdown("<div class='outline-container'>", unsafe_allow_html=True)
-                        st.markdown(outline)
-                        st.markdown("</div>", unsafe_allow_html=True)
-                        
-                        # Add copy and download buttons
-                        st.download_button(
-                            label="Download Outline as Markdown",
-                            data=outline,
-                            file_name=f"{doc_type.lower().replace(' ', '_')}_outline.md",
-                            mime="text/markdown"
-                        )
-                        
-                        # Structure info
-                        section_count = data.get("section_count", 0)
-                        subsection_count = data.get("subsection_count", 0)
-                        st.info(f"Outline structure: {section_count} main sections with {subsection_count} subsections")
-                    else:
-                        st.info("Could not generate an outline with the provided information.")
+                thinking_placeholder = st.empty()
+                outline_text = ""
+                for line in response.iter_lines():
+                    if not line: continue
+                    step = json.loads(line.decode('utf-8'))
+                    if step.get('type') in ['thinking','retrieval','generation']:
+                        thinking_placeholder.text(f"{step['type'].capitalize()}: {step['content']}")
+                    elif step.get('type') == 'complete':
+                        outline_text = step.get('content', '')
+                        details = step.get('details', {})
+                        break
+                    elif step.get('type') == 'error':
+                        thinking_placeholder.text(f"Error: {step['content']}")
+                        break
+                if outline_text:
+                    st.markdown("### Document Outline")
+                    st.markdown(f"<div class='outline-container'>{outline_text}</div>", unsafe_allow_html=True)
+                    st.download_button(label="Download Outline as Markdown", data=outline_text, file_name=f"{doc_type.lower().replace(' ','_')}_outline.md", mime="text/markdown")
+                    st.info(f"Outline structure: {details.get('section_count',0)} main sections with {details.get('subsection_count',0)} subsections")
                 else:
-                    st.error(f"Error: {response.status_code} - {response.text}")
+                    st.info("Could not generate an outline with the provided information.")
             except Exception as e:
                 st.error(f"An error occurred: {str(e)}")
 
+# Update Citation Verifier to streaming
 elif st.session_state.current_tab == "Citation Verifier":
     st.markdown("### Citation Verifier")
     st.markdown("""
@@ -443,22 +474,33 @@ elif st.session_state.current_tab == "Citation Verifier":
         with st.spinner("Verifying citation..."):
             try:
                 response = requests.post(
-                    f"{API_URL}/verify_citation",
+                    f"{API_URL}/verify_citation/stream",
                     json={"citation": citation},
+                    stream=True,
                     timeout=60
                 )
-                
-                if response.status_code == 200:
-                    data = response.json()
+                thinking_placeholder = st.empty()
+                result_data = {}
+                for line in response.iter_lines():
+                    if not line: continue
+                    step = json.loads(line.decode('utf-8'))
+                    if step.get('type') in ['thinking','tool_use','retrieval','generation']:
+                        thinking_placeholder.text(f"{step['type'].capitalize()}: {step['content']}")
+                    elif step.get('type') == 'complete':
+                        result_data = step.get('details', {})
+                        break
+                    elif step.get('type') == 'error':
+                        thinking_placeholder.text(f"Error: {step['content']}")
+                        break
+                if result_data:
+                    # Display verification result
+                    original = result_data.get("original_citation", citation)
+                    is_valid = result_data.get("is_valid", False)
+                    corrected = result_data.get("corrected_citation", "")
+                    summary = result_data.get("summary", "")
+                    error_details = result_data.get("error_details", "")
                     
                     st.markdown("<div class='citation-container'>", unsafe_allow_html=True)
-                    
-                    # Display verification result
-                    original = data.get("original_citation", citation)
-                    is_valid = data.get("is_valid", False)
-                    corrected = data.get("corrected_citation", "")
-                    summary = data.get("summary", "")
-                    error_details = data.get("error_details", "")
                     
                     # Original citation
                     st.markdown(f"**Original Citation:** {original}")
@@ -493,10 +535,10 @@ elif st.session_state.current_tab == "Citation Verifier":
                     
                     st.markdown("</div>", unsafe_allow_html=True)
                 else:
-                    st.error(f"Error: {response.status_code} - {response.text}")
+                    st.error("No verification data received.")
             except Exception as e:
                 st.error(f"An error occurred: {str(e)}")
 
 # Footer
 st.markdown("---")
-st.markdown("<p class='help-text'>Vaqeel.app is powered by advanced AI technology and a comprehensive Indian legal database.</p>", unsafe_allow_html=True)
+st.markdown("<p class='help-text'>LegalEase.app is powered by advanced AI technology and a comprehensive Indian legal database.</p>", unsafe_allow_html=True)

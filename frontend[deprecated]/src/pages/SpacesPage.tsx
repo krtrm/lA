@@ -38,6 +38,9 @@ interface SpaceFormField {
   helperText?: string
 }
 
+// Local storage key for spaces
+const STORAGE_KEY = 'vaqeel_spaces';
+
 export default function SpacesPage() {
   const [selectedSpace, setSelectedSpace] = useState<Space | null>(null)
   const [inputMessage, setInputMessage] = useState('')
@@ -304,63 +307,92 @@ export default function SpacesPage() {
     }
   ]
 
-  // Load sample spaces on mount
+  // Load spaces from localStorage on mount
   useEffect(() => {
-    // This would be an API call in a real implementation
-    const sampleSpaces: Space[] = [
-      {
-        id: 1,
-        title: 'Contract Review',
-        type: 'document_drafting',
-        createdAt: '2023-11-15',
-        lastActive: '2023-11-20',
-        messages: [
+    try {
+      const savedSpaces = localStorage.getItem(STORAGE_KEY);
+      if (savedSpaces) {
+        const parsedSpaces = JSON.parse(savedSpaces);
+        setSpaces(parsedSpaces);
+        
+        // Calculate stats
+        setUsageStats({
+          totalSpaces: parsedSpaces.length,
+          messagesThisMonth: parsedSpaces.reduce((count: number, space: Space) => count + space.messages.length, 0),
+          activeResearches: parsedSpaces.length
+        });
+      } else {
+        // Sample spaces if no stored data exists
+        const sampleSpaces: Space[] = [
           {
             id: 1,
-            role: 'user',
-            content: 'Can you create an outline for an NDA agreement?',
-            timestamp: '2:30 PM'
+            title: 'Contract Review',
+            type: 'document_drafting',
+            createdAt: '2023-11-15',
+            lastActive: '2023-11-20',
+            messages: [
+              {
+                id: 1,
+                role: 'user',
+                content: 'Can you create an outline for an NDA agreement?',
+                timestamp: '2:30 PM'
+              },
+              {
+                id: 2,
+                role: 'assistant',
+                content: 'I\'d be happy to create an outline for an NDA agreement. Here\'s a comprehensive structure...',
+                timestamp: '2:31 PM'
+              }
+            ]
           },
           {
             id: 2,
-            role: 'assistant',
-            content: 'I\'d be happy to create an outline for an NDA agreement. Here\'s a comprehensive structure...',
-            timestamp: '2:31 PM'
+            title: 'IP Law Research',
+            type: 'legal_research',
+            createdAt: '2023-11-10',
+            lastActive: '2023-11-18',
+            messages: [
+              {
+                id: 1,
+                role: 'user',
+                content: 'What are the recent changes in intellectual property law?',
+                timestamp: '3:45 PM'
+              },
+              {
+                id: 2,
+                role: 'assistant',
+                content: 'There have been several significant developments in intellectual property law recently. Let me outline the key changes...',
+                timestamp: '3:46 PM'
+              }
+            ]
           }
-        ]
-      },
-      {
-        id: 2,
-        title: 'IP Law Research',
-        type: 'legal_research',
-        createdAt: '2023-11-10',
-        lastActive: '2023-11-18',
-        messages: [
-          {
-            id: 1,
-            role: 'user',
-            content: 'What are the recent changes in intellectual property law?',
-            timestamp: '3:45 PM'
-          },
-          {
-            id: 2,
-            role: 'assistant',
-            content: 'There have been several significant developments in intellectual property law recently. Let me outline the key changes...',
-            timestamp: '3:46 PM'
-          }
-        ]
+        ];
+        
+        setSpaces(sampleSpaces);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(sampleSpaces));
+        
+        // Calculate stats
+        setUsageStats({
+          totalSpaces: sampleSpaces.length,
+          messagesThisMonth: sampleSpaces.reduce((count, space) => count + space.messages.length, 0),
+          activeResearches: sampleSpaces.length
+        });
       }
-    ];
-    
-    setSpaces(sampleSpaces);
-    
-    // Calculate stats
-    setUsageStats({
-      totalSpaces: sampleSpaces.length,
-      messagesThisMonth: sampleSpaces.reduce((count, space) => count + space.messages.length, 0),
-      activeResearches: sampleSpaces.length
-    });
+    } catch (error) {
+      console.error('Error loading spaces from localStorage:', error);
+    }
   }, []);
+
+  // Save spaces to localStorage whenever they change
+  useEffect(() => {
+    try {
+      if (spaces.length > 0) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(spaces));
+      }
+    } catch (error) {
+      console.error('Error saving spaces to localStorage:', error);
+    }
+  }, [spaces]);
 
   // Handle sending a message in a space
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -383,12 +415,12 @@ export default function SpacesPage() {
     
     setSelectedSpace(updatedSpace);
     
-    // Update in spaces list
-    setSpaces(prevSpaces => 
-      prevSpaces.map(space => 
-        space.id === selectedSpace.id ? updatedSpace : space
-      )
+    // Update in spaces list and persist to localStorage
+    const newSpaces = spaces.map(space => 
+      space.id === selectedSpace.id ? updatedSpace : space
     );
+    setSpaces(newSpaces);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newSpaces));
     
     setInputMessage('');
     setApiError(null);
@@ -401,13 +433,19 @@ export default function SpacesPage() {
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
     
-    setSelectedSpace(prev => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        messages: [...prev.messages, loadingMessage]
-      };
-    });
+    const spaceWithLoadingMessage = {
+      ...updatedSpace,
+      messages: [...updatedSpace.messages, loadingMessage]
+    };
+    
+    setSelectedSpace(spaceWithLoadingMessage);
+    
+    // Update in spaces list and persist
+    const spacesWithLoadingMessage = spaces.map(space => 
+      space.id === selectedSpace.id ? spaceWithLoadingMessage : space
+    );
+    setSpaces(spacesWithLoadingMessage);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(spacesWithLoadingMessage));
     
     // Call appropriate API based on space type
     try {
@@ -474,7 +512,7 @@ export default function SpacesPage() {
       
       // Replace loading message with actual response
       const assistantMessage: Message = {
-        id: updatedSpace.messages.length + 1,
+        id: spaceWithLoadingMessage.messages.length,
         role: 'assistant',
         content: answerText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -487,12 +525,12 @@ export default function SpacesPage() {
       
       setSelectedSpace(finalUpdatedSpace);
       
-      // Update in spaces list
-      setSpaces(prevSpaces => 
-        prevSpaces.map(space => 
-          space.id === selectedSpace.id ? finalUpdatedSpace : space
-        )
+      // Update in spaces list and persist to localStorage
+      const finalSpaces = spaces.map(space => 
+        space.id === selectedSpace.id ? finalUpdatedSpace : space
       );
+      setSpaces(finalSpaces);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(finalSpaces));
       
     } catch (error: any) {
       console.error('API error:', error);
@@ -500,7 +538,7 @@ export default function SpacesPage() {
       
       // Remove loading message and add error message
       const errorMessage: Message = {
-        id: updatedSpace.messages.length + 1,
+        id: spaceWithLoadingMessage.messages.length,
         role: 'assistant',
         content: `Sorry, I encountered an error: ${error.message || 'Unknown error'}. Please try again.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -513,12 +551,12 @@ export default function SpacesPage() {
       
       setSelectedSpace(errorUpdatedSpace);
       
-      // Update in spaces list
-      setSpaces(prevSpaces => 
-        prevSpaces.map(space => 
-          space.id === selectedSpace.id ? errorUpdatedSpace : space
-        )
+      // Update in spaces list and persist to localStorage
+      const errorSpaces = spaces.map(space => 
+        space.id === selectedSpace.id ? errorUpdatedSpace : space
       );
+      setSpaces(errorSpaces);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(errorSpaces));
     }
   }
 
@@ -805,8 +843,10 @@ export default function SpacesPage() {
       
       console.log("Created new space:", newSpace);
       
-      // Add the new space to the list and select it
-      setSpaces(prev => [newSpace, ...prev]);
+      // Add the new space to the list, persist to localStorage, and select it
+      const newSpaces = [newSpace, ...spaces];
+      setSpaces(newSpaces);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newSpaces));
       setSelectedSpace(newSpace);
       
       // Update stats
@@ -951,7 +991,7 @@ export default function SpacesPage() {
           </div>
         </div>
       </div>
-    )
+    );
   }
 
   return (

@@ -10,10 +10,11 @@ import {
   ArrowRight, 
   Check
 } from 'lucide-react';
+import { Button } from './ui/button';
 
 const LandingPage: React.FC = () => {
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-black">
       {/* Hero Section */}
       <section className="relative overflow-hidden">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-32 pb-20">
@@ -31,13 +32,17 @@ const LandingPage: React.FC = () => {
                 Research, analyze, and draft legal documents with powerful AI tailored for Indian legal professionals.
               </p>
               <div className="flex flex-wrap gap-4">
-                <Link to="/sign-up" className="button-primary text-lg px-8 py-3">
-                  Get Started Free
-                  <ArrowRight className="w-5 h-5 ml-2" />
-                </Link>
-                <Link to="/sign-in" className="button-secondary text-lg px-8 py-3">
-                  Sign In
-                </Link>
+                <Button asChild className="px-8 py-6 h-auto text-lg font-medium">
+                  <Link to="/sign-up">
+                    Get Started Free
+                    <ArrowRight className="w-5 h-5 ml-2" />
+                  </Link>
+                </Button>
+                <Button asChild variant="outline" className="px-8 py-6 h-auto text-lg font-medium">
+                  <Link to="/sign-in">
+                    Sign In
+                  </Link>
+                </Button>
               </div>
             </motion.div>
             
@@ -191,9 +196,11 @@ const LandingPage: React.FC = () => {
             <p className="text-xl text-white/70 mb-8 max-w-3xl mx-auto">
               Join thousands of legal professionals using Vaqeel to streamline research, drafting, and analysis.
             </p>
-            <Link to="/sign-up" className="button-primary text-lg px-8 py-3 inline-flex items-center">
-              Get Started Free <ArrowRight className="w-5 h-5 ml-2" />
-            </Link>
+            <Button asChild className="px-8 py-6 h-auto text-lg">
+              <Link to="/sign-up">
+                Get Started Free <ArrowRight className="w-5 h-5 ml-2" />
+              </Link>
+            </Button>
           </motion.div>
         </div>
       </section>

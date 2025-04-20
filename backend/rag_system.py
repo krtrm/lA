@@ -133,14 +133,14 @@ def create_vector_store(doc_paths: List[str], index_name: str = "llama-text-embe
                     spec_config = {"serverless": {"cloud": cloud, "region": region_val}}
                 pc.create_index(
                     name=index_name,
-                    dimension=1536,
+                    dimension=1024,
                     metric="cosine",
                     spec=spec_config
                 )
             else:
                 pc.create_index(
                     name=index_name,
-                    dimension=1536,
+                    dimension=1024,
                     metric="cosine",
                     spec={"serverless": {"cloud": pinecone_region}}
                 )
@@ -151,7 +151,7 @@ def create_vector_store(doc_paths: List[str], index_name: str = "llama-text-embe
                 # Try with simplified config (just cloud, no region)
                 pc.create_index(
                     name=index_name,
-                    dimension=1536,
+                    dimension=1024,
                     metric="cosine",
                     spec={"serverless": {"cloud": "gcp"}}
                 )
@@ -162,7 +162,7 @@ def create_vector_store(doc_paths: List[str], index_name: str = "llama-text-embe
                 try:
                     pc.create_index(
                         name=index_name,
-                        dimension=1536,
+                        dimension=1024,
                         metric="cosine",
                         spec={"serverless": {"cloud": "aws"}}
                     )
@@ -1018,8 +1018,28 @@ class ToolManager:
             if json_match:
                 plan_text = json_match.group(1)
             
-            # Parse the plan
-            plan = json.loads(plan_text)
+            # More robust JSON parsing - strip leading/trailing whitespace
+            plan_text = plan_text.strip()
+            
+            # Handle case where the JSON might have single quotes instead of double quotes
+            try:
+                plan = json.loads(plan_text)
+            except json.JSONDecodeError:
+                # Try to fix common issues with the JSON format
+                plan_text = plan_text.replace("'", "\"")
+                # Replace unquoted keys with quoted keys
+                plan_text = re.sub(r'(\s*)(\w+)(\s*):(\s*)', r'\1"\2"\3:\4', plan_text)
+                try:
+                    plan = json.loads(plan_text)
+                except json.JSONDecodeError:
+                    # If still failing, fallback to the default plan
+                    logger.error(f"Failed to parse JSON plan: {plan_text}")
+                    raise ValueError("Invalid JSON in plan")
+            
+            # Ensure the plan has the expected structure
+            if not isinstance(plan, dict) or "plan" not in plan or "tools" not in plan:
+                raise ValueError("Invalid plan structure")
+                
             return plan
         except Exception as e:
             logger.error(f"Error creating plan: {e}")
@@ -1590,7 +1610,13 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
             
             prompt_val = simple_prompt.format_messages(query=query)
             response = await self.legal_specialist.ainvoke(prompt_val)
-            return {"content": response.content}
+            
+            # Ensure we always return a dict with 'content' key
+            if response and hasattr(response, 'content'):
+                return {"content": response.content}
+            else:
+                logger.warning("Received empty or invalid response from language model")
+                return {"content": "Hello! How can I assist you with legal information today?"}
         except Exception as e:
             logger.error(f"Error generating simple response: {e}")
             return {"content": "Hello! How can I assist you with legal information today?"}
@@ -1761,453 +1787,3 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
                 break
         
         return docs_for_context
-
-class IKAPIWrapper:
-    """Wrapper for Indian Kanoon API to retrieve legal documents"""
-    
-    def __init__(self):
-        token = os.getenv("INDIANKANOON_API_TOKEN")
-        data_dir = os.getenv("INDIANKANOON_DATA_DIR", "/tmp/ik_data")
-        
-        if not os.path.exists(data_dir):
-            os.makedirs(data_dir)
-            
-        self.storage = FileStorage(data_dir)
-        
-        # Configure minimal args
-        class Args:
-            token: str = None
-            maxcites: int = 5
-            maxcitedby: int = 5
-            orig: bool = False
-            maxpages: int = 1
-            pathbysrc: bool = True
-            addedtoday: bool = False
-            numworkers: int = 1
-            fromdate: Optional[str] = None
-            todate: Optional[str] = None
-            sortby: Optional[str] = None
-        
-        args = Args()
-        args.token = token
-        args.maxcites = 5
-        args.maxcitedby = 5
-        args.orig = False
-        args.maxpages = 1
-        args.pathbysrc = True
-        args.addedtoday = False
-        args.numworkers = 1
-        args.fromdate = None
-        args.todate = None
-        args.sortby = None
-        
-        self.ikapi = IKApi(args, self.storage)
-    
-    def search_case_law(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
-        """Search case law in Indian Kanoon"""
-        try:
-            results = self.ikapi.search(query, 0, 1)  # First page only
-            result_obj = json.loads(results)
-            
-            if 'docs' not in result_obj:
-                return []
-                
-            docs = result_obj['docs'][:max_results]
-            processed_docs = []
-            
-            for doc in docs:
-                doc_id = doc['tid']
-                doc_json = self.ikapi.fetch_doc(doc_id)
-                doc_data = json.loads(doc_json)
-                
-                processed_docs.append({
-                    "title": doc_data.get('title', ''),
-                    "content": doc_data.get('doc', ''),
-                    "source": f"indiankanoon.org/doc/{doc_id}/",
-                    "domain": "indiankanoon.org",
-                    "docid": doc_id,
-                    "citation": doc_data.get('citation', ''),
-                    "type": "legal_document"
-                })
-                
-            return processed_docs
-        except Exception as e:
-            logger.error(f"Error searching Indian Kanoon: {e}")
-            return []
-
-class WebRetriever:
-    """Enhanced web retriever with multimedia support"""
-    
-    def __init__(self):
-        # Increase timeout for better reliability
-        self.http_client = httpx.AsyncClient(timeout=15, verify=False)  # Disable SSL verification for problematic sites
-        self.ik_api = IKAPIWrapper()
-        # Track already processed URLs to avoid duplicates
-        self.processed_urls = set()
-        # Set a minimum result count threshold before stopping search
-        self.min_results_threshold = 5
-        # Maximum number of search queries to try
-        self.max_search_queries = 2
-        # Maximum URLs to process per query
-        self.max_urls_per_query = 3
-    
-    async def search_web(self, query: str, max_results: int = 5) -> List[Dict]:
-        """
-        Perform a web search using Serper API with Indian geolocation
-        """
-        # Add warnings filter to suppress SSL verification warnings
-        import warnings
-        warnings.filterwarnings('ignore', message='Unverified HTTPS request')
-        
-        try:
-            # Use Serper API as primary search method if available
-            serper_api_key = os.getenv("SERPER_API_KEY")
-            if (serper_api_key):
-                logger.info(f"Searching with Serper API: {query}")
-                url = "https://google.serper.dev/search"
-                
-                payload = json.dumps({
-                    "q": query,
-                    "gl": "in",  # Set geolocation to India
-                    "num": max_results * 2  # Request more results to have backup options
-                })
-                
-                headers = {
-                    'X-API-KEY': serper_api_key,
-                    'Content-Type': 'application/json'
-                }
-                
-                response = requests.post(url, headers=headers, data=payload, timeout=10)
-                data = response.json()
-                
-                results = []
-                
-                # Process organic search results
-                if "organic" in data:
-                    for item in data["organic"][:max_results]:
-                        # Skip sites that commonly cause SSL errors
-                        if any(domain in item.get("link", "") for domain in ["rtionline.up.gov.in"]):
-                            continue
-                            
-                        results.append({
-                            "url": item.get("link", ""),
-                            "title": item.get("title", ""),
-                            "description": item.get("snippet", "")
-                        })
-                
-                # Process knowledge graph if available (only if we need more results)
-                if "knowledgeGraph" in data and len(results) < max_results:
-                    kg = data["knowledgeGraph"]
-                    if "descriptionLink" in kg:
-                        results.append({
-                            "url": kg.get("descriptionLink", ""),
-                            "title": kg.get("title", ""),
-                            "description": kg.get("description", "")
-                        })
-                
-                return results[:max_results]  # Ensure we only return the requested number
-                
-            # Fall back to DuckDuckGo if Serper API key not available
-            url = f"https://api.duckduckgo.com/?q={query}&format=json"
-            response = await self.http_client.get(url)
-            data = response.json()
-            
-            results = []
-            # Extract organic results
-            for result in data.get("Results", [])[:max_results]:
-                results.append({
-                    "url": result.get("FirstURL", ""),
-                    "title": result.get("Text", ""),
-                    "description": ""
-                })
-            
-            # Also include related topics
-            for topic in data.get("RelatedTopics", [])[:max_results]:
-                if "FirstURL" in topic:
-                    results.append({
-                        "url": topic.get("FirstURL", ""),
-                        "title": topic.get("Text", ""),
-                        "description": ""
-                    })
-            
-            return results
-                
-        except Exception as e:
-            logger.error(f"Error in web search: {e}")
-            # Fallback to a simple Google search page scraping as last resort
-            try:
-                search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-                response = await self.http_client.get(search_url, headers=headers)
-                
-                soup = BeautifulSoup(response.text, "html.parser")
-                results = []
-                
-                for g in soup.find_all('div', class_='g'):
-                    anchors = g.find_all('a')
-                    if anchors:
-                        link = anchors[0]['href']
-                        title = g.find('h3').text if g.find('h3') else "No title"
-                        results.append({
-                            "url": link,
-                            "title": title,
-                            "description": ""
-                        })
-                        
-                        if len(results) >= max_results:
-                            break
-                
-                return results
-            except Exception as e2:
-                logger.error(f"Error in fallback search: {e2}")
-                return []
-
-    async def process_content(self, url: str) -> Optional[Dict[str, Any]]:
-        """Process different content types from the web"""
-        try:
-            # Determine content type
-            if "youtube.com" in url or "youtu.be" in url:
-                return await self._extract_youtube(url)
-            elif url.endswith(".pdf"):
-                return await self._extract_pdf(url)
-            else:
-                return await self._extract_webpage(url)
-        except Exception as e:
-            logger.error(f"Error processing {url}: {e}")
-            return None
-    
-    async def _extract_youtube(self, url: str) -> Dict[str, Any]:
-        """Extract content from YouTube videos"""
-        try:
-            loader = YoutubeLoader.from_youtube_url(
-                url, add_video_info=True, language=["en", "hi"]
-            )
-            docs = loader.load()
-            
-            if not docs:
-                # Fallback to pytube
-                yt = YouTube(url)
-                transcript = yt.captions.get_by_language_code('en')
-                
-                if transcript:
-                    content = transcript.generate_srt_captions()
-                else:
-                    content = yt.description
-                
-                return {
-                    "content": content,
-                    "source": url,
-                    "domain": "youtube.com",
-                    "title": yt.title,
-                    "type": "video"
-                }
-            
-            combined_text = "\n\n".join([doc.page_content for doc in docs])
-            metadata = docs[0].metadata if docs else {}
-            
-            return {
-                "content": combined_text,
-                "source": url,
-                "domain": "youtube.com",
-                "title": metadata.get("title", "YouTube Video"),
-                "type": "video"
-            }
-        except Exception as e:
-            logger.error(f"Error extracting YouTube content: {e}")
-            return {
-                "content": f"Failed to extract content from {url}",
-                "source": url,
-                "domain": "youtube.com",
-                "title": "YouTube Video",
-                "type": "video"
-            }
-    
-    async def _extract_pdf(self, url: str) -> Dict[str, Any]:
-        """Extract content from PDF documents with OCR"""
-        try:
-            response = await self.http_client.get(url)
-            
-            # Download the PDF
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                tmp.write(response.content)
-                tmp_path = tmp.name
-            
-            text_content = ""
-            try:
-                # First try to extract text directly
-                doc = fitz.open(tmp_path)
-                for page_num in range(len(doc)):
-                    page = doc.load_page(page_num)
-                    text_content += page.get_text()
-                doc.close()
-                
-                # If no text extracted, use OCR
-                if not text_content.strip():
-                    doc = fitz.open(tmp_path)
-                    for page_num in range(len(doc)):
-                        page = doc.load_page(page_num)
-                        pix = page.get_pixmap()
-                        img = Image.open(BytesIO(pix.tobytes()))
-                        text_content += pytesseract.image_to_string(img)
-                    doc.close()
-            finally:
-                os.unlink(tmp_path)
-            
-            domain = tldextract.extract(url).domain
-            
-            return {
-                "content": text_content,
-                "source": url,
-                "domain": domain,
-                "title": f"PDF Document from {domain}",
-                "type": "pdf"
-            }
-        except Exception as e:
-            logger.error(f"Error extracting PDF content: {e}")
-            return {
-                "content": f"Failed to extract content from {url}",
-                "source": url,
-                "domain": tldextract.extract(url).domain,
-                "title": "PDF Document",
-                "type": "pdf"
-            }
-    
-    async def _extract_webpage(self, url: str) -> Dict[str, Any]:
-        """Extract content from webpages"""
-        try:
-            # Skip specific problematic domains
-            if any(domain in url for domain in ["rtionline.up.gov.in"]):
-                return None
-                
-            # Use a custom loader with SSL verification disabled for government sites
-            loader = AsyncHtmlLoader([url], verify_ssl=False)
-            docs = await loader.aload()
-            
-            if not docs:
-                return None
-                
-            transformer = Html2TextTransformer()
-            docs_transformed = transformer.transform_documents(docs)
-            
-            if not docs_transformed:
-                return None
-                
-            content = docs_transformed[0].page_content
-            metadata = docs_transformed[0].metadata
-            
-            # Extract title and other metadata using BeautifulSoup
-            soup = BeautifulSoup(docs[0].page_content, "html.parser")
-            title = soup.title.text if soup.title else url
-            
-            domain = tldextract.extract(url).domain
-            
-            return {
-                "content": content,
-                "source": url,
-                "domain": domain,
-                "title": title,
-                "type": "webpage"
-            }
-        except Exception as e:
-            logger.error(f"Error extracting webpage content: {e}")
-            return None
-    
-    async def search_and_process(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
-        """Search the web and process the results in one step"""
-        search_results = await self.search_web(query, max_results)
-        if not search_results:
-            return []
-            
-        # Process results concurrently
-        processed_results = []
-        tasks = []
-        
-        for result in search_results[:max_results]:
-            if result.get("url"):
-                tasks.append(self.process_content(result["url"]))
-                
-        # Process in batches for better resource management
-        for i in range(0, len(tasks), self.concurrent_requests):
-            batch = tasks[i:i+self.concurrent_requests]
-            try:
-                batch_results = await asyncio.gather(*batch, return_exceptions=True)
-                for result in batch_results:
-                    if isinstance(result, Exception):
-                        logger.error(f"Error processing content: {result}")
-                    elif result:
-                        processed_results.append(result)
-            except Exception as e:
-                logger.error(f"Error processing batch: {e}")
-                
-        return processed_results
-    
-    def _rank_documents(self, question: str, docs: List[Document]) -> List[Document]:
-        """Rank documents by relevance and source authority"""
-        domain_scores = {
-            "indiankanoon.org": 5.0,
-            "gov.in": 4.5,
-            "nic.in": 4.0,
-            "sci.gov.in": 5.0,  # Supreme Court
-            "hc.gov.in": 4.5,   # High Courts
-            "edu": 3.5,
-            "org": 3.0,
-            "com": 2.0
-        }
-        
-        def get_domain_score(doc):
-            source = doc.metadata.get("source", "")
-            domain = doc.metadata.get("domain", "")
-            
-            # Check for exact domain matches
-            for key, score in domain_scores.items():
-                if key in source or key in domain:
-                    return score
-            
-            # Get TLD score
-            parts = domain.split(".")
-            if len(parts) > 1:
-                tld = parts[-1]
-                if tld in domain_scores:
-                    return domain_scores[tld]
-            
-            return 1.0
-        
-        # Calculate semantic similarity for each document
-        for doc in docs:
-            text = doc.page_content[:1000]  # limit text length for efficiency
-            try:
-                doc.metadata["relevance_score"] = self._semantic_similarity(question, text)
-            except Exception as e:
-                logger.error(f"Error calculating similarity: {e}")
-                doc.metadata["relevance_score"] = 0.0
-            
-            doc.metadata["domain_score"] = get_domain_score(doc)
-            doc.metadata["combined_score"] = (
-                doc.metadata["relevance_score"] * 0.7 + 
-                doc.metadata["domain_score"] * 0.3
-            )
-        
-        # Sort by combined score
-        ranked_docs = sorted(
-            docs, 
-            key=lambda x: x.metadata.get("combined_score", 0),
-            reverse=True
-        )
-        
-        # Keep top 10 documents
-        return ranked_docs[:10]
-    
-    def _semantic_similarity(self, query: str, text: str) -> float:
-        """Calculate semantic similarity between query and text"""
-        try:
-            query_embedding = embeddings.embed_query(query)  # type: ignore
-            text_embedding = embeddings.embed_query(text)  # type: ignore
-            
-            # Calculate cosine similarity
-            similarity = np.dot(query_embedding, text_embedding) / (
-                np.linalg.norm(query_embedding) * np.linalg.norm(text_embedding)
-            )
-            return float(similarity)
-        except Exception as e:
-            logger.error(f"Error in semantic similarity: {e}")
-            return 0.0

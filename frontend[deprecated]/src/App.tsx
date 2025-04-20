@@ -1,21 +1,18 @@
 import { BrowserRouter as Router, Routes, Route, Navigate, Link } from 'react-router-dom';
 import { ClerkProvider, SignedIn, SignedOut, useAuth } from '@clerk/clerk-react';
 import { SignIn, SignUp } from '@clerk/clerk-react';
-import { ApiProvider } from './context/ApiContext.jsx'; // Use explicit .jsx extension
+import { ApiProvider } from './context/ApiContext';
 import Navbar from './components/Navbar';
 import { Toaster } from 'react-hot-toast';
 import { Loader2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
-// Import pages that exist
+// Import pages
 import DashboardPage from './pages/DashboardPage';
 import SpacesPage from './pages/SpacesPage';
-
-// Remove imports of files that don't exist
-// import LandingPage from './pages/LandingPage';
-// import SignInPage from './pages/SignInPage';
-// import SignUpPage from './pages/SignUpPage';
-// import NewsPage from './pages/NewsPage';
+import NewsPage from './pages/NewsPage';
+import BlogPage from './pages/BlogPage';
+import BlogEditorPage from './pages/BlogEditorPage';
 
 const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || 'pk_test_dummy-key-for-development';
 
@@ -120,11 +117,35 @@ function AppContent() {
             element={
               <>
                 <SignedIn>
-                  {/* Replace with a simple placeholder since NewsPage doesn't exist */}
-                  <div className="container mx-auto p-4">
-                    <h1 className="text-2xl font-bold mb-4">News</h1>
-                    <p>News feature coming soon!</p>
-                  </div>
+                  <NewsPage />
+                </SignedIn>
+                <SignedOut>
+                  <Navigate to="/sign-in" replace />
+                </SignedOut>
+              </>
+            }
+          />
+          
+          <Route
+            path="/blog/:blogId"
+            element={
+              <>
+                <SignedIn>
+                  <BlogPage />
+                </SignedIn>
+                <SignedOut>
+                  <Navigate to="/sign-in" replace />
+                </SignedOut>
+              </>
+            }
+          />
+          
+          <Route
+            path="/blog/new"
+            element={
+              <>
+                <SignedIn>
+                  <BlogEditorPage />
                 </SignedIn>
                 <SignedOut>
                   <Navigate to="/sign-in" replace />
