@@ -5,8 +5,7 @@ import logging
 from dotenv import load_dotenv, find_dotenv
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
-from langchain_openai import OpenAIEmbeddings
-from rag_system import EnhancedLegalRAGSystem
+from rag_system import EnhancedLegalRAGSystem, SlicedOpenAIEmbeddings  # use our sliced embeddings
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -27,8 +26,8 @@ else:
 def init_rag_system(index_name=None, namespace="indian-law"):
     """Initialize the RAG system with an existing Pinecone index"""
     
-    # Initialize OpenAI embeddings
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    # Initialize sliced OpenAI embeddings to match our Pinecone index dimensions
+    embeddings = SlicedOpenAIEmbeddings(model="text-embedding-3-small")
     
     try:
         # Connect to Pinecone

@@ -128,48 +128,34 @@ def handle_chat_query():
         web_search = st.session_state.get('web_search', True)
         with st.spinner("LegalEase is researching your question..."):
             try:
+                # Use the non-streaming endpoint instead of the streaming one
                 response = requests.post(
-                    f"{API_URL}/query/stream",
-                    json={"query": query, "use_web": web_search, "stream_thinking": True},
-                    stream=True,
+                    f"{API_URL}/query",  # Use the non-streaming endpoint
+                    json={"query": query, "use_web": web_search},
                     timeout=60
                 )
-                thinking_placeholder = st.empty()
-                answer = ""
-                sources = []
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    step = json.loads(line.decode('utf-8'))
-                    t = step.get('type')
-                    c = step.get('content', '')
-                    if t in ['thinking','planning','tool_use','retrieval','generation']:
-                        thinking_placeholder.text(f"{t.capitalize()}: {c}")
-                    elif t == 'complete':
-                        answer = c
-                        # Handle cases where details might be None
-                        details = step.get('details', {})
-                        if details is not None:
-                            sources = details.get('sources', []) or []
-                        break
-                    elif t == 'error':
-                        thinking_placeholder.text(f"Error: {c}")
-                        break
                 
-                # Add the response to chat history
-                st.session_state.chat_history.append({
-                    "role": "user", 
-                    "content": query
-                })
-                
-                if answer:
+                if response.status_code == 200:
+                    result = response.json()
+                    answer = result.get("answer", "")
+                    sources = result.get("sources", [])
+                    
+                    # Add the response to chat history
                     st.session_state.chat_history.append({
-                        "role": "assistant", 
-                        "content": answer, 
-                        "sources": sources
+                        "role": "user", 
+                        "content": query
                     })
+                    
+                    if answer:
+                        st.session_state.chat_history.append({
+                            "role": "assistant", 
+                            "content": answer, 
+                            "sources": sources
+                        })
+                    else:
+                        st.error("No response received from the AI.")
                 else:
-                    st.error("No response received from the AI.")
+                    st.error(f"Error from API: {response.status_code} - {response.text}")
             except Exception as e:
                 st.error(f"An error occurred: {str(e)}")
 

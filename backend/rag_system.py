@@ -51,13 +51,23 @@ def get_pinecone_client():
 
 # Replace the embeddings initialization with a subclass that slices vectors to 1024 dimensions
 class SlicedOpenAIEmbeddings(OpenAIEmbeddings):
-    def embed_query(self, text: str) -> List[float]:  # Specify list of float not just list
-        vec = super().embed_query(text)
-        return vec[:1024]
+    """OpenAI embeddings that slice vectors to a target dimension."""
     
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:  # Proper type annotation
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Don't set as attribute, just use as a constant in methods
+    
+    def embed_query(self, text: str) -> List[float]:
+        """Embed query text and slice to 1024 dimension"""
+        vec = super().embed_query(text)
+        # Slice to 1024 dimensions
+        return vec[:1024] if len(vec) > 1024 else vec
+    
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """Embed documents and slice each embedding to 1024 dimension"""
         vectors = super().embed_documents(texts)
-        return [v[:1024] for v in vectors]
+        # Slice each vector to 1024 dimensions
+        return [v[:1024] if len(v) > 1024 else v for v in vectors]
 
 embeddings = SlicedOpenAIEmbeddings(model="text-embedding-3-small")
 
@@ -918,28 +928,40 @@ class ToolManager:
         
         # Planning prompt template
         self.planning_prompt = ChatPromptTemplate.from_template("""
-        You are an AI assistant tasked with planning how to answer a legal query.
+        You are an AI assistant specializing in Indian law, tasked with planning how to answer legal queries about the Indian judicial system.
         
         Available tools:
         {tools}
         
         User query: {query}
         
-        First, analyze the query to understand what information is needed. Then create a plan for using the tools to get that information.
+        First, analyze the query to understand what information is needed about Indian law. Then create a plan for using the tools to get that information.
         
-        For each tool, decide if it should be used, in what order, and with what parameters. Remember that:
-        1. Always start with vector_db_lookup to check our existing knowledge base
-        2. Only use indian_kanoon_search if the query explicitly relates to Indian law, cases, or legal precedents
-        3. Only resort to web_search if the above tools don't yield sufficient information
+        When crafting your plan:
+        1. Break down complex legal queries into 3-4 specific search queries that target different aspects of Indian law
+        2. Use precise legal terminology relevant to Indian statutes, acts, and court systems
+        3. Include queries that target specific acts, sections, or landmark judgments of the Supreme Court of India or High Courts when relevant
+        4. Consider both the letter of the law (statutory provisions) and judicial interpretations (case law)
+        
+        For each tool, decide if it should be used, in what order, and with what parameters. The search strategy should:
+        1. Always start with vector_db_lookup to check our existing knowledge base about Indian law
+        2. Use indian_kanoon_search for queries that need authoritative legal precedents or specific case citations
+        3. Only resort to web_search if the above tools don't yield sufficient information, with queries precisely tailored to Indian legal contexts
         
         Your output must be a valid JSON object with this structure:
         {
-            "plan": "Brief explanation of your approach",
+            "plan": "Detailed explanation of your search strategy for this Indian legal query",
+            "search_queries": [
+                "specific query 1 targeting relevant Indian legal information",
+                "specific query 2 focusing on another aspect",
+                "specific query 3 addressing case law or precedents",
+                "specific query 4 (if needed)"
+            ],
             "tools": [
                 {
                     "tool": "tool_name",
-                    "parameters": {"param1": "value1"},
-                    "reason": "Why you're using this tool"
+                    "parameters": {"query": "precise legal query focusing on Indian context", "other_params": "values"},
+                    "reason": "Why you're using this tool for this specific Indian legal information"
                 },
                 ...
             ]
@@ -1031,31 +1053,60 @@ class ToolManager:
                 plan_text = re.sub(r'(\s*)(\w+)(\s*):(\s*)', r'\1"\2"\3:\4', plan_text)
                 try:
                     plan = json.loads(plan_text)
-                except json.JSONDecodeError:
-                    # If still failing, fallback to the default plan
-                    logger.error(f"Failed to parse JSON plan: {plan_text}")
-                    raise ValueError("Invalid JSON in plan")
+                except json.JSONDecodeError as e:
+                    # If still failing, try another approach with string literals
+                    logger.warning(f"First JSON fix failed: {e}")
+                    try:
+                        # Replace common escape characters
+                        plan_text = plan_text.replace("\n", "\\n").replace("\t", "\\t")
+                        # Fix any remaining unquoted keys more aggressively
+                        plan_text = re.sub(r'([\{,]\s*)([a-zA-Z0-9_]+)(\s*:)', r'\1"\2"\3', plan_text)
+                        # Try to parse again
+                        plan = json.loads(plan_text)
+                    except json.JSONDecodeError:
+                        logger.error(f"All JSON fixes failed for: {plan_text}")
+                        raise ValueError("Invalid JSON in plan")
             
-            # Ensure the plan has the expected structure
-            if not isinstance(plan, dict) or "plan" not in plan or "tools" not in plan:
-                raise ValueError("Invalid plan structure")
+            # Ensure the plan has the expected structure or create a valid structure
+            if not isinstance(plan, dict):
+                raise ValueError("Plan must be a dictionary")
+                
+            # Handle minimal schema validation
+            if "plan" not in plan:
+                plan["plan"] = "Generated plan"
+                
+            if "tools" not in plan:
+                # Set a default tool configuration
+                plan["tools"] = [
+                    {
+                        "tool": "vector_db_lookup",
+                        "parameters": {"query": query, "k": 5},
+                        "reason": "Default knowledge base search"
+                    }
+                ]
+                
+            # Add search queries array if not present but was requested in the prompt
+            if "search_queries" not in plan:
+                plan["search_queries"] = [query]
                 
             return plan
+            
         except Exception as e:
             logger.error(f"Error creating plan: {e}")
-            # Return a default plan that just uses vector DB and web search
+            # Return a clear default plan using vector DB and web search due to planning error
             return {
-                "plan": "Fallback plan due to planning error",
+                "plan": "Default plan due to planning error: using vector DB lookup and web search",
+                "search_queries": [query],
                 "tools": [
                     {
                         "tool": "vector_db_lookup",
                         "parameters": {"query": query, "k": 5},
-                        "reason": "Check existing knowledge base"
+                        "reason": "Fallback: search existing knowledge base"
                     },
                     {
                         "tool": "web_search",
                         "parameters": {"query": query, "max_results": 3},
-                        "reason": "Find additional information online"
+                        "reason": "Fallback: fetch information online"
                     }
                 ]
             }
@@ -1068,18 +1119,22 @@ class ToolManager:
                 source=content.get("source", "unknown"),
                 type=content.get("type", "unknown")
             )
-            
             response = await self.evaluation_llm.ainvoke(prompt_val)
-            eval_text = response.content
-            
-            # Extract JSON from response
-            import re
-            json_match = re.search(r'({.*})', eval_text, re.DOTALL)
-            if json_match:
-                eval_text = json_match.group(1)
-                
-            # Parse the evaluation
-            evaluation = json.loads(eval_text)
+            eval_text = response.content if hasattr(response, 'content') else str(response)
+            # Extract JSON substring safely
+            start = eval_text.find('{')
+            end = eval_text.rfind('}')
+            json_text = eval_text[start:end+1] if start != -1 and end != -1 else eval_text
+            try:
+                evaluation = json.loads(json_text)
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error in evaluate_content: {e}, text: {eval_text}")
+                # Fallback default evaluation
+                return {
+                    "should_index": False,
+                    "reason": "Evaluation parsing error",
+                    "quality_score": 0
+                }
             return evaluation
         except Exception as e:
             logger.error(f"Error evaluating content: {e}")
@@ -1112,7 +1167,7 @@ class LegalRAGSystem:
         
         # Switch to OpenAI for GPT-4o with reduced token limits
         self.legal_specialist = ChatOpenAI(
-            temperature=0.1,
+            temperature=0.,
             model_name="gpt-4o-mini",
             max_tokens=2000,  # Reduced from 4096 to leave more room for input
             request_timeout=120
@@ -1120,14 +1175,19 @@ class LegalRAGSystem:
         
         # Setup improved prompt with better context handling
         self.qa_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a legal assistant specializing in Indian law. 
-            Analyze the following legal context and provide a detailed, accurate response with proper citations.
-            
-            If information is not available in the context, clearly state that rather than making up an answer.
-            
-            Use markdown formatting for better readability. When citing cases, use proper citation format.
-            Keep your response concise and focused on answering the user's question directly.
-            """),
+            ("system", """
+You are an Indian legal assistant specializing exclusively in Indian law and the Indian judicial system.
+Analyze the following legal context and provide a detailed, accurate response with proper citations to Indian statutes, acts, and case law.
+
+Always refer to relevant sections of Indian legislation, landmark judgments of the Supreme Court of India or High Courts, and follow Indian legal conventions and terminology.
+
+If information is not available in the context, clearly state that rather than making up an answer or referring to non-Indian legal systems.
+
+Use markdown formatting for better readability.
+Include inline citations in square brackets (e.g., [1], [2]) corresponding to your source list.
+At the end of your answer, include a "References:" section enumerating full citations (title and URL) for each cited source.
+Keep your response concise and focused on answering the user's question directly according to Indian law.
+"""),
             ("human", "Context:\n{context}\n\nQuestion: {input}")
         ])
         
@@ -1519,7 +1579,7 @@ class LegalRAGSystem:
                         else:
                             # Simple truncation for fallback case
                             max_chars = int((token_budget - 100) * 4)  # Rough char estimate
-                            doc.page_content = doc.page_content[:max_chars] + "... [content truncated due to length]"
+                            doc.page_content = doc.page_content[:max_chars] + "... [content truncated]"
                     except Exception as e:
                         logger.warning(f"Error truncating document: {e}")
                         # Simple truncation fallback
@@ -1705,10 +1765,16 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
             
             # 7. Generate response
             logger.info(f"Generating response with {len(docs_for_context)} documents")
-            return await self.qa_chain.ainvoke({
+            resp = await self.qa_chain.ainvoke({
                 "input": question,
                 "context": docs_for_context
             })
+            # Ensure response is a dict
+            if isinstance(resp, dict):
+                return resp
+            # Wrap raw or str response
+            content = resp.content if hasattr(resp, 'content') else str(resp)
+            return {"content": content}
         except Exception as e:
             logger.error(f"Error in tool-based query: {e}")
             # Fallback to simpler approach
@@ -1719,6 +1785,140 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
                     "input": question,
                     "context": docs[:3]  # Use only top 3 docs
                 })
+            except Exception as e2:
+                logger.error(f"Error in fallback query: {e2}")
+                return {"content": f"I'm having trouble answering this question due to a technical error. Please try asking in a different way or contact support. Error: {str(e2)}"}
+    
+    async def query_non_streaming(self, question: str, use_web: bool = True):
+        """
+        Generate a complete response without streaming for a legal query.
+        This is similar to the query method but returns complete results at once.
+        
+        Args:
+            question: The legal question to answer
+            use_web: Whether to use web search if needed
+            
+        Returns:
+            Dict containing the complete response
+        """
+        try:
+            # 1. First check if the query even needs tools
+            if not await self._needs_tools(question):
+                logger.info(f"Query classified as simple, skipping tools: '{question}'")
+                return await self.generate_simple_response(question)
+                
+            # 2. Planning phase - determine which tools to use
+            plan = await self.tool_manager.create_plan(question)
+            logger.info(f"Created plan: {plan['plan']}")
+            
+            # 3. Tool execution phase
+            all_results = []
+            valuable_content = []
+            
+            for tool_step in plan.get("tools", []):
+                tool_name = tool_step.get("tool")
+                parameters = tool_step.get("parameters", {})
+                
+                logger.info(f"Executing tool: {tool_name}")
+                tool_result = await self.tool_manager.execute_tool(tool_name, **parameters)
+                
+                if tool_result.get("status") == "success":
+                    results = tool_result.get("results", [])
+                    
+                    if results:
+                        all_results.extend(results)
+                        logger.info(f"Got {len(results)} results from {tool_name}")
+                        
+                        # Evaluate if results should be indexed (if not from vector DB)
+                        if tool_name != "vector_db_lookup" and tool_result.get("source") != "vector_db":
+                            for result in results:
+                                # Skip empty or very short content
+                                if not result.get("content") or len(result.get("content", "")) < 200:
+                                    continue
+                                    
+                                evaluation = await self.tool_manager.evaluate_content(result)
+                                if evaluation.get("should_index", False) and evaluation.get("quality_score", 0) >= 7:
+                                    valuable_content.append(result)
+                                    logger.info(f"Marked content from {result.get('source', 'unknown')} for indexing (score: {evaluation.get('quality_score', 0)})")
+            
+            # 4. Index valuable content if any
+            if valuable_content:
+                logger.info(f"Indexing {len(valuable_content)} valuable pieces of content")
+                indexing_result = await self.tool_manager.execute_tool("pinecone_indexer", content=valuable_content)
+                logger.info(f"Indexing result: {indexing_result}")
+            
+            # 5. Convert to Document objects for final response generation
+            documents = []
+            sources = []  # Track sources for return value
+            
+            for result in all_results:
+                if not result.get("content"):
+                    continue
+                
+                # Add to sources list for return value
+                sources.append({
+                    "title": result.get("title", "Unknown"),
+                    "source": result.get("source", ""),
+                    "type": result.get("type", "document")
+                })
+                    
+                documents.append(
+                    Document(
+                        page_content=result.get("content", ""),
+                        metadata={
+                            "source": result.get("source", ""),
+                            "title": result.get("title", ""),
+                            "domain": result.get("domain", ""),
+                            "type": result.get("type", "unknown")
+                        }
+                    )
+                )
+            
+            # 6. Manage token count
+            token_budget = self.max_input_tokens
+            question_tokens = self._count_tokens(question)
+            token_budget -= question_tokens
+            
+            # Calculate tokens for prompt template (fixed approximation)
+            system_prompt = "You are a legal assistant specializing in Indian law. Analyze the following legal context and provide a detailed, accurate response with proper citations."
+            human_prompt_template = "Context:\n{context}\n\nQuestion: {input}"
+            prompt_template_tokens = self._count_tokens(system_prompt) + self._count_tokens(human_prompt_template)
+            token_budget -= prompt_template_tokens
+            
+            # Reserve tokens for the model's response
+            token_budget -= 2000  # Response tokens
+            
+            # Select documents to include within token budget
+            docs_for_context = self._select_docs_within_budget(documents, token_budget)
+            
+            # 7. Generate response
+            logger.info(f"Generating response with {len(docs_for_context)} documents")
+            resp = await self.qa_chain.ainvoke({
+                "input": question,
+                "context": docs_for_context
+            })
+            # Ensure response is mutable dict
+            if isinstance(resp, dict):
+                response_obj = resp
+            else:
+                # Wrap raw response
+                content = resp.content if hasattr(resp, 'content') else str(resp)
+                response_obj = {"content": content}
+            # Add sources detail
+            response_obj["details"] = {"sources": sources[:5]}
+            return response_obj
+        except Exception as e:
+            logger.error(f"Error in non-streaming query: {e}")
+            # Fallback to simpler approach
+            try:
+                # Get some documents from vector DB
+                docs = self.retriever.invoke(question)
+                response = await self.qa_chain.ainvoke({
+                    "input": question,
+                    "context": docs[:3]  # Use only top 3 docs
+                })
+                response["details"] = {"sources": []}  # Empty sources list for fallback
+                return response
             except Exception as e2:
                 logger.error(f"Error in fallback query: {e2}")
                 return {"content": f"I'm having trouble answering this question due to a technical error. Please try asking in a different way or contact support. Error: {str(e2)}"}
@@ -1771,7 +1971,7 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
                         else:
                             # Simple truncation for fallback case
                             max_chars = int((token_budget - 100) * 4)  # Rough char estimate
-                            doc.page_content = doc.page_content[:max_chars] + "... [content truncated due to length]"
+                            doc.page_content = doc.page_content[:max_chars] + "... [content truncated]"
                     except Exception as e:
                         logger.warning(f"Error truncating document: {e}")
                         # Simple truncation fallback

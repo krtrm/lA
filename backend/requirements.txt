@@ -34,7 +34,6 @@ fastapi==0.109.2
 uvicorn==0.27.1
 pyOpenSSL
 python-multipart==0.0.9
-langfuse==1.14.1
 pypdf==4.0.0
 aiosqlite==0.19.0
 SQLAlchemy==2.0.27

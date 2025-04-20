@@ -20,6 +20,7 @@ from fastapi.concurrency import run_in_threadpool
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from database import Database
+import concurrent.futures
 
 # Import the news API router
 from news_api import router as news_router
@@ -62,18 +63,38 @@ if os.getenv("ENVIRONMENT", "development").lower() == "production":
 else:
     logger.info("HTTPS redirect middleware disabled (development mode)")
 
-# Initialize RAG system with correct Pinecone index name
+# Initialize RAG system with correct Pinecone index name with timeout
 # Use the actual available index from logs: llama-text-embed-v2-index
 index_name = os.getenv("PINECONE_INDEX_NAME", "llama-text-embed-v2-index")
 namespace = os.getenv("PINECONE_NAMESPACE", "indian-law")
 
-logger.info(f"Initializing RAG system with index: {index_name}, namespace: {namespace}")
-rag_system = init_rag_system(index_name=index_name, namespace=namespace)
+# Set proper data directory for IKAPITool in the current user workspace
+os.environ["INDIANKANOON_DATA_DIR"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../ik_data")
+logger.info(f"Setting IK data dir to: {os.environ['INDIANKANOON_DATA_DIR']}")
 
-if not rag_system:
-    logger.error(f"Failed to initialize RAG system with index '{index_name}'")
-else:
-    logger.info("RAG system initialized successfully")
+# Global RAG system variable
+rag_system = None
+
+logger.info(f"Attempting to initialize RAG system with index: {index_name}, namespace: {namespace}")
+
+# Try to initialize with timeout
+try:
+    # Use a ThreadPoolExecutor with timeout to prevent hanging
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(init_rag_system, index_name, namespace)
+        try:
+            # Set a 30-second timeout
+            rag_system = future.result(timeout=30)
+            if rag_system:
+                logger.info("RAG system initialized successfully")
+            else:
+                logger.error(f"Failed to initialize RAG system with index '{index_name}' - returned None")
+        except concurrent.futures.TimeoutError:
+            logger.error("RAG system initialization timed out after 30 seconds")
+            # Make sure we're not leaving the thread hanging
+            future.cancel()
+except Exception as e:
+    logger.error(f"Exception during RAG system initialization: {str(e)}")
 
 # Add connection pool for RAG system
 @asynccontextmanager
@@ -219,12 +240,21 @@ def stream_response_generator(steps_generator):
 async def root():
     return {"message": "Welcome to the Vaqeel.app Legal AI API"}
 
-# Update query endpoint with connection pooling
-@app.post("/WWquery")
+@app.post("/query", response_model=QueryResponse)
 async def query_legal_ai(request: QueryRequest):
-    # Use streaming implementation for consistent streaming responses
-    stream_req = StreamingQueryRequest(**request.model_dump(), stream_thinking=True)
-    return await stream_query_legal_ai(stream_req)
+    """
+    Non-streaming endpoint for legal queries, returns JSON with answer and sources.
+    """
+    if not rag_system:
+        raise HTTPException(status_code=503, detail="RAG system not initialized. Please ensure the vector database is set up.")
+    # Call non-streaming query method
+    result = await rag_system.query_non_streaming(request.query, request.use_web)
+    # Extract answer content and sources
+    answer = result.get("content") if isinstance(result, dict) else None
+    sources = []
+    if isinstance(result, dict):
+        sources = result.get("details", {}).get("sources", [])
+    return {"answer": answer or "", "sources": sources, "steps": []}
 
 # Streaming version of query endpoint
 @app.post("/query/stream")
@@ -275,8 +305,14 @@ async def stream_query_legal_ai(request: StreamingQueryRequest):
                     timestamp=time.time()
                 )
                 response = await rag_system.generate_simple_response(request.query)
-                # handle string or dict response
-                content = response if isinstance(response, str) else response.get("content", "I'm not sure how to respond to that.")
+                # Handle both string and dict responses
+                if isinstance(response, str):
+                    content = response
+                elif isinstance(response, dict):
+                    content = response.get("content", "I'm not sure how to respond to that.")
+                else:
+                    content = "I'm not sure how to respond to that."
+                    
                 yield StreamStep(
                     type="complete",
                     content=content,
@@ -286,6 +322,10 @@ async def stream_query_legal_ai(request: StreamingQueryRequest):
             
             # Get the plan
             plan = await rag_system.tool_manager.create_plan(request.query)
+            # Ensure plan is a dict with tools list
+            if not isinstance(plan, dict):
+                raw_plan = plan
+                plan = {"plan": str(raw_plan), "tools": []}
             yield StreamStep(
                 type="planning",
                 content=f"Created plan: {plan['plan']}",
@@ -311,18 +351,30 @@ async def stream_query_legal_ai(request: StreamingQueryRequest):
                 tool_tasks.append(rag_system.tool_manager.execute_tool(tool_name, **parameters))
             
             # Process tools in parallel with timeout
-            for result in await asyncio.gather(*tool_tasks, return_exceptions=True):
+            gathered = await asyncio.gather(*tool_tasks, return_exceptions=True)
+            for idx, result in enumerate(gathered):
                 await asyncio.sleep(0)  # Yield control
+                # Skip exceptions
+                if isinstance(result, Exception):
+                    yield StreamStep(
+                        type="error",
+                        content=f"Tool execution error: {str(result)}",
+                        timestamp=time.time(),
+                        details={"tool": plan.get("tools", [])[idx].get("tool")}
+                    )
+                    continue
+                # Ensure result is a dict
+                if not isinstance(result, dict):
+                    continue
                 if result.get("status") == "success":
-                    results = result.get("results", [])
-                    if results:
-                        all_results.extend(results)
-                        result_count = len(results)
+                    res_list = result.get("results", []) or []
+                    if res_list:
+                        all_results.extend(res_list)
                         yield StreamStep(
                             type="retrieval",
-                            content=f"Found {result_count} results from {tool_name}",
+                            content=f"Found {len(res_list)} results from {plan.get('tools', [])[idx].get('tool')}",
                             timestamp=time.time(),
-                            details={"source": tool_name, "count": result_count}
+                            details={"source": plan.get('tools', [])[idx].get('tool'), "count": len(res_list)}
                         )
             
             # Convert to documents
@@ -364,22 +416,30 @@ async def stream_query_legal_ai(request: StreamingQueryRequest):
             docs_for_context = rag_system._select_docs_within_budget(documents, token_budget)
             
             # Generate response
-            result = await rag_system.qa_chain.ainvoke({
+            raw_resp = await rag_system.qa_chain.ainvoke({
                 "input": request.query,
                 "context": docs_for_context
             })
-            
+            # Extract content safely
+            if isinstance(raw_resp, dict):
+                content = raw_resp.get("content", "I couldn't find a good answer based on the information available.")
+            elif hasattr(raw_resp, 'get'):
+                content = raw_resp.get("content", "I couldn't find a good answer based on the information available.")
+            elif hasattr(raw_resp, 'content'):
+                content = raw_resp.content
+            else:
+                content = str(raw_resp)
             # Return final answer
             yield StreamStep(
                 type="complete",
-                content=result.get("content", "I couldn't find a good answer based on the information available."),
+                content=content,
                 timestamp=time.time(),
                 details={"sources": [
                     {
                         "title": doc.metadata.get("title", "Unknown"),
                         "source": doc.metadata.get("source", ""),
                         "type": doc.metadata.get("type", "document")
-                    } for doc in docs_for_context[:5]  # Limit to top 5
+                    } for doc in docs_for_context[:5]
                 ]}
             )
         
