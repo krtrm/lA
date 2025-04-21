@@ -111,53 +111,7 @@ st.markdown("""
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 if 'current_tab' not in st.session_state:
-    st.session_state.current_tab = "Chat"
-
-# Add this callback function to handle query submission and reset
-def submit_query():
-    if st.session_state.query_input:
-        st.session_state.submitted_query = st.session_state.query_input
-        # Don't try to reset the input field directly here
-
-# Modify the chat query handling function
-def handle_chat_query():
-    if st.session_state.get('submitted_query'):
-        query = st.session_state.submitted_query
-        # Clear the submitted query so we don't process it again
-        st.session_state.submitted_query = ""
-        web_search = st.session_state.get('web_search', True)
-        with st.spinner("LegalEase is researching your question..."):
-            try:
-                # Use the non-streaming endpoint instead of the streaming one
-                response = requests.post(
-                    f"{API_URL}/query",  # Use the non-streaming endpoint
-                    json={"query": query, "use_web": web_search},
-                    timeout=60
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    answer = result.get("answer", "")
-                    sources = result.get("sources", [])
-                    
-                    # Add the response to chat history
-                    st.session_state.chat_history.append({
-                        "role": "user", 
-                        "content": query
-                    })
-                    
-                    if answer:
-                        st.session_state.chat_history.append({
-                            "role": "assistant", 
-                            "content": answer, 
-                            "sources": sources
-                        })
-                    else:
-                        st.error("No response received from the AI.")
-                else:
-                    st.error(f"Error from API: {response.status_code} - {response.text}")
-            except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
+    st.session_state.current_tab = "Legal Keyword Extraction"
 
 # App header
 st.markdown("<h1 class='main-header'>LegalEase.app</h1>", unsafe_allow_html=True)
@@ -180,7 +134,6 @@ with st.sidebar:
     st.markdown("### Choose Function")
     
     function_options = [
-        "Chat", 
         "Legal Keyword Extraction", 
         "Legal Argument Composer", 
         "Document Outline Generator", 
@@ -194,77 +147,9 @@ with st.sidebar:
         index=function_options.index(st.session_state.current_tab)
     )
     st.session_state.current_tab = selected_function
-    
-    if selected_function == "Chat":
-        st.markdown("### Chat Settings")
-        web_search = st.checkbox("Enable web search", value=True, 
-                            help="When enabled, LegalEase will search the web for the most up-to-date information")
-        
-        st.markdown("---")
-        st.markdown("### Sample Questions")
-        sample_questions = [
-            "What is the procedure to file an RTI in India?",
-            "Explain the rights granted under Article 21 of the Indian Constitution",
-            "What are the provisions for paternity leave in India?",
-            "Explain the recent changes to the IT Act in India",
-            "What is the process for filing a consumer complaint in India?"
-        ]
-        
-        for q in sample_questions:
-            if st.button(q):
-                st.session_state.current_question = q
 
 # Main content area based on selected function
-if st.session_state.current_tab == "Chat":
-    # Chat interface
-    query = st.text_area("Ask any legal question about Indian law:", 
-                        height=100, 
-                        key="query_input",
-                        value=st.session_state.get('current_question', ''))
-
-    col1, col2 = st.columns([1, 5])
-    with col1:
-        submit_button = st.button("Ask LegalEase", type="primary", on_click=submit_query)
-
-    if 'current_question' in st.session_state:
-        del st.session_state.current_question
-
-    # Process the query - call handle_chat_query on each render to process any submitted queries
-    if st.session_state.get('submitted_query'):
-        handle_chat_query()
-
-    # Display chat history
-    if st.session_state.chat_history:
-        st.markdown("### Conversation")
-        for message in st.session_state.chat_history:
-            if message["role"] == "user":
-                st.markdown(f"**You:** {message['content']}")
-            else:
-                st.markdown("<div class='response-container'>", unsafe_allow_html=True)
-                st.markdown(f"**LegalEase:** {message['content']}")
-                
-                # Display sources if available
-                if "sources" in message and message["sources"]:
-                    st.markdown("---")
-                    st.markdown("**Sources:**")
-                    for source in message["sources"]:
-                        st.markdown(f"""
-                        <div class='source-box'>
-                            <div class='source-title'>{source.get('title', 'Unknown Source')}</div>
-                            <div class='source-url'>{source.get('source', '')}</div>
-                            <div>{source.get('type', 'document').capitalize()}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-                st.markdown("</div>", unsafe_allow_html=True)
-        
-        # Add a way to clear chat
-        if st.button("Clear Conversation"):
-            st.session_state.chat_history = []
-            st.experimental_rerun()
-
-# Update Keyword Extraction to streaming
-elif st.session_state.current_tab == "Legal Keyword Extraction":
+if st.session_state.current_tab == "Legal Keyword Extraction":
     st.markdown("### Legal Keyword Extraction")
     st.markdown("""
     Extract key legal terms and their definitions from your text. 
@@ -347,15 +232,17 @@ elif st.session_state.current_tab == "Legal Keyword Extraction":
 
 # Update Argument Composer to streaming
 elif st.session_state.current_tab == "Legal Argument Composer":
+    with st.expander("ℹ️ How to use this feature", expanded=False):
+        st.markdown("1. Enter the main legal topic or issue you need an argument for.\n2. List key points you want included.\n3. Click 'Generate Argument' to compose your legal argument.")
     st.markdown("### Legal Argument Composer")
     st.markdown("""
     Generate structured legal arguments ready to paste into your documents.
     Provide a topic and key points to include, and LegalEase will compose a coherent legal argument.
     """)
     
-    topic = st.text_input("Main legal topic or issue:", key="argument_topic")
+    topic = st.text_input("Main legal topic or issue:", key="argument_topic", help="Enter the central legal question or topic for your argument.")
     
-    # Dynamically add points
+    # Dynamically add points with help
     if 'argument_points' not in st.session_state:
         st.session_state.argument_points = ["", "", ""]
     
@@ -363,15 +250,18 @@ elif st.session_state.current_tab == "Legal Argument Composer":
     
     # Display existing points
     for i, point in enumerate(st.session_state.argument_points):
-        st.session_state.argument_points[i] = st.text_input(f"Point {i+1}", value=point, key=f"point_{i}")
+        st.session_state.argument_points[i] = st.text_input(
+            f"Point {i+1}", value=point, key=f"point_{i}", 
+            help="Enter a key point or argument heading to include in the legal argument."
+        )
     
     col1, col2 = st.columns([1, 1])
     with col1:
-        if st.button("Add Point") and len(st.session_state.argument_points) < 10:
+        if st.button("Add Point", help="Click to add another key point field.") and len(st.session_state.argument_points) < 10:
             st.session_state.argument_points.append("")
             st.experimental_rerun()
     with col2:
-        if st.button("Remove Point") and len(st.session_state.argument_points) > 1:
+        if st.button("Remove Point", help="Click to remove the last key point field.") and len(st.session_state.argument_points) > 1:
             st.session_state.argument_points.pop()
             st.experimental_rerun()
     
@@ -417,6 +307,8 @@ elif st.session_state.current_tab == "Legal Argument Composer":
 
 # Update Outline Generator to streaming
 elif st.session_state.current_tab == "Document Outline Generator":
+    with st.expander("ℹ️ How to use this feature", expanded=False):
+        st.markdown("1. Select the type of legal document you want to create an outline for.\n2. Enter the topic or subject of the document.\n3. Click 'Generate Outline' to receive a structured outline.")
     st.markdown("### Document Outline Generator")
     st.markdown("""
     Get a professional document structure for your legal documents. 
@@ -428,10 +320,12 @@ elif st.session_state.current_tab == "Document Outline Generator":
         doc_type = st.selectbox(
             "Document Type", 
             ["Legal Brief", "Legal Memo", "Legal Opinion", "Contract", "Petition", 
-             "Complaint", "Settlement Agreement", "Legal Notice", "Affidavit", "Will"]
+             "Complaint", "Settlement Agreement", "Legal Notice", "Affidavit", "Will"],
+            help="Choose the type of legal document you need an outline for."
         )
     with col2:
-        outline_topic = st.text_input("Document Topic:", key="outline_topic")
+        outline_topic = st.text_input("Document Topic:", key="outline_topic", 
+                                     help="Enter the subject or issue the document will address.")
     
     if st.button("Generate Outline", type="primary") and outline_topic and doc_type:
         with st.spinner("Generating document outline..."):
@@ -468,14 +362,20 @@ elif st.session_state.current_tab == "Document Outline Generator":
 
 # Update Citation Verifier to streaming
 elif st.session_state.current_tab == "Citation Verifier":
+    with st.expander("ℹ️ How to use this feature", expanded=False):
+        st.markdown("1. Paste or type the legal citation you want to verify.\n2. Click 'Verify Citation'.\n3. Review whether the citation is valid, corrections, and summary of the law.")
     st.markdown("### Citation Verifier")
     st.markdown("""
     Verify the accuracy of legal citations, get corrections for improper formats, 
     and check if citations refer to valid cases or statutes.
     """)
     
-    citation = st.text_input("Enter legal citation to verify:", key="citation_input", 
-                           placeholder="e.g., AIR 1950 SC 27 or (2019) 1 SCC 1")
+    citation = st.text_input(
+        "Enter legal citation to verify:", 
+        key="citation_input", 
+        placeholder="e.g., AIR 1950 SC 27 or (2019) 1 SCC 1",
+        help="Type the citation you wish to check for format and validity."
+    )
     
     if st.button("Verify Citation", type="primary") and citation:
         with st.spinner("Verifying citation..."):
