@@ -10,6 +10,7 @@ from langchain_community.document_loaders import AsyncHtmlLoader, YoutubeLoader
 from langchain_community.document_transformers import Html2TextTransformer
 from bs4 import BeautifulSoup
 import httpx
+import re
 import tldextract
 from typing import List, Dict, Any, Optional, Union, Callable
 import json
@@ -379,7 +380,7 @@ class WebSearchTool(Tool):
         }
         # Set thresholds
         self.min_results_threshold = 3
-        self.max_search_queries = 2
+        self.max_search_queries = 3  # Allow up to 3 refined search prompts
         self.max_urls_per_query = 3
         self.concurrent_requests = 3  # How many urls to process simultaneously
     
@@ -1035,38 +1036,29 @@ class ToolManager:
             plan_text = response.content
             
             # Extract JSON from response (in case the model adds extra text)
-            import re
-            json_match = re.search(r'({.*})', plan_text, re.DOTALL)
+            json_match = re.search(r'\{.*\}', plan_text, re.DOTALL)
             if json_match:
-                plan_text = json_match.group(1)
-            
+                plan_text = json_match.group(0)
+            else:
+                # Handle cases where the response might not be valid JSON at all
+                logger.error(f"Could not extract JSON from planning response: {plan_text}")
+                raise ValueError("Planning response did not contain valid JSON.")
+
             # More robust JSON parsing - strip leading/trailing whitespace
             plan_text = plan_text.strip()
-            
+
             # Handle case where the JSON might have single quotes instead of double quotes
             try:
                 plan = json.loads(plan_text)
             except json.JSONDecodeError:
-                # Try to fix common issues with the JSON format
-                plan_text = plan_text.replace("'", "\"")
-                # Replace unquoted keys with quoted keys
-                plan_text = re.sub(r'(\s*)(\w+)(\s*):(\s*)', r'\1"\2"\3:\4', plan_text)
                 try:
-                    plan = json.loads(plan_text)
+                    # Attempt to fix single quotes
+                    plan_text_fixed = plan_text.replace("'", '"')
+                    plan = json.loads(plan_text_fixed)
                 except json.JSONDecodeError as e:
-                    # If still failing, try another approach with string literals
-                    logger.warning(f"First JSON fix failed: {e}")
-                    try:
-                        # Replace common escape characters
-                        plan_text = plan_text.replace("\n", "\\n").replace("\t", "\\t")
-                        # Fix any remaining unquoted keys more aggressively
-                        plan_text = re.sub(r'([\{,]\s*)([a-zA-Z0-9_]+)(\s*:)', r'\1"\2"\3', plan_text)
-                        # Try to parse again
-                        plan = json.loads(plan_text)
-                    except json.JSONDecodeError:
-                        logger.error(f"All JSON fixes failed for: {plan_text}")
-                        raise ValueError("Invalid JSON in plan")
-            
+                    logger.error(f"Failed to parse plan JSON even after fixing quotes: {plan_text}")
+                    raise e # Re-raise the error after logging
+
             # Ensure the plan has the expected structure or create a valid structure
             if not isinstance(plan, dict):
                 raise ValueError("Plan must be a dictionary")
@@ -1122,17 +1114,21 @@ class ToolManager:
             response = await self.evaluation_llm.ainvoke(prompt_val)
             eval_text = response.content if hasattr(response, 'content') else str(response)
             # Extract JSON substring safely
-            start = eval_text.find('{')
-            end = eval_text.rfind('}')
-            json_text = eval_text[start:end+1] if start != -1 and end != -1 else eval_text
+            json_match = re.search(r'\{.*\}', eval_text, re.DOTALL)
+            if json_match:
+                json_text = json_match.group(0)
+            else:
+                logger.warning(f"Could not extract JSON from evaluation response: {eval_text}")
+                json_text = "{}" # Default to empty JSON if extraction fails
+
             try:
                 evaluation = json.loads(json_text)
             except json.JSONDecodeError as e:
-                logger.error(f"JSON decode error in evaluate_content: {e}, text: {eval_text}")
-                # Fallback default evaluation
-                return {
+                logger.error(f"Failed to parse evaluation JSON: {json_text} - Error: {e}")
+                # Default to not indexing on parsing error
+                evaluation = {
                     "should_index": False,
-                    "reason": "Evaluation parsing error",
+                    "reason": f"JSON parsing error: {str(e)}",
                     "quality_score": 0
                 }
             return evaluation
@@ -1167,8 +1163,8 @@ class LegalRAGSystem:
         
         # Switch to OpenAI for GPT-4o with reduced token limits
         self.legal_specialist = ChatOpenAI(
-            temperature=0.,
-            model_name="gpt-4o-mini",
+            temperature=0.3,
+            model_name="gpt-4.1-mini",
             max_tokens=2000,  # Reduced from 4096 to leave more room for input
             request_timeout=120
         )
@@ -1184,8 +1180,9 @@ Always refer to relevant sections of Indian legislation, landmark judgments of t
 If information is not available in the context, clearly state that rather than making up an answer or referring to non-Indian legal systems.
 
 Use markdown formatting for better readability.
-Include inline citations in square brackets (e.g., [1], [2]) corresponding to your source list.
+After every sentence, include an inline citation in square brackets (e.g., [1], [2]).
 At the end of your answer, include a "References:" section enumerating full citations (title and URL) for each cited source.
+Ensure citations are precise and formatted consistently.
 Keep your response concise and focused on answering the user's question directly according to Indian law.
 """),
             ("human", "Context:\n{context}\n\nQuestion: {input}")
@@ -1193,20 +1190,14 @@ Keep your response concise and focused on answering the user's question directly
         
         # Specialized prompts for different use cases
         self.keyword_extraction_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a legal terminology expert. Extract and define all key legal terms from the provided text.
-            Format your response as a JSON object where each key is a legal term and each value is its definition.
-            Only include terms that have specific legal meaning. Organize terms in order of importance.
-            
-            Output format should be valid JSON and nothing else:
-            {
-                "term1": "concise definition",
-                "term2": "concise definition",
-                ...
-            }
-            """),
-            ("human", "Text: {input}")
+            ("system", """You are a legal terminology expert. Extract and define all key legal terms from the provided text, using the context for better definitions.
+Format your response as a valid JSON object where each key is a legal term and each value is its concise definition.
+Only include terms that have specific legal meaning and organize them by importance.
+Return only the JSON object, nothing else.
+"""),
+            ("human", "Context:\n{context}\n\nText: {input}") # Added {context}
         ])
-        
+
         self.composition_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a legal writing assistant helping to compose structured legal arguments.
             Create a well-structured argument based on the topic and points provided. 
@@ -1293,65 +1284,92 @@ Keep your response concise and focused on answering the user's question directly
     async def extract_legal_keywords(self, text: str) -> Dict[str, Any]:
         """
         Extract key legal terms and their definitions from text.
-        
+
         Args:
             text: The legal text to analyze
-            
+
         Returns:
             Dictionary with extracted terms and their definitions
         """
         try:
             # First retrieve relevant context for better definitions
-            docs = self.retriever.invoke(text[:500])  # Use first part of text for query
+            raw_docs = self.retriever.invoke(text[:500])  # Use first part of text for query
+            logger.info(f"extract_legal_keywords: Retriever invoked. Raw result type: {type(raw_docs)}")
+
+            # Robustly ensure raw_docs is a list and wrap items
+            if not isinstance(raw_docs, list):
+                raw_docs = [raw_docs]
+            docs = []
+            for i, item in enumerate(raw_docs):
+                if isinstance(item, Document):
+                    docs.append(item)
+                elif isinstance(item, dict) and 'page_content' in item:
+                    docs.append(Document(page_content=item['page_content'], metadata=item.get('metadata', {})))
+                elif isinstance(item, str):
+                    logger.warning(f"extract_legal_keywords: Retriever returned a string at index {i} - wrapping.")
+                    docs.append(Document(page_content=item, metadata={'source': 'retriever_string_result'}))
+                else:
+                    logger.warning(f"extract_legal_keywords: Retriever returned unexpected type {type(item)} at index {i} - converting to string.")
+                    docs.append(Document(page_content=str(item), metadata={'source': 'retriever_unknown_result'}))
+
             context_docs = self._select_docs_within_budget(docs, 3000)  # Keep context reasonable
-            context = "\n\n".join([doc.page_content for doc in context_docs])
-            
+            logger.info(f"extract_legal_keywords: Selected {len(context_docs)} documents for context.")
+
             # Create chain for keyword extraction
             keyword_chain = create_stuff_documents_chain(
                 self.legal_specialist,
-                self.keyword_extraction_prompt
+                self.keyword_extraction_prompt,
+                document_variable_name="context" # Explicitly set document variable name
             )
-            
-            # Get response
+
+            # Get response - pass the list of Documents
             response = await keyword_chain.ainvoke({
                 "input": text,
-                "context": context
+                "context": context_docs # Pass the list of Documents
             })
-            
-            # Extract JSON from response
-            content = response.get("content", "{}")
-            
+
+            # Extract JSON from response (response should be a string from the chain)
+            content = response if isinstance(response, str) else str(response)
+            logger.info(f"extract_legal_keywords: Raw response content: {content[:200]}...") # Log raw response
+
             # Try to parse as JSON (clean up if needed)
             try:
-                import re
-                json_match = re.search(r'({.*})', content, re.DOTALL)
+                # Find JSON block within potential markdown code fences
+                json_match = re.search(r'```(?:json)?\n({.*?})\n```', content, re.DOTALL)
                 if json_match:
-                    content = json_match.group(1)
-                
-                results = json.loads(content)
+                    json_str = json_match.group(1)
+                else:
+                    # Fallback: find first '{' and last '}'
+                    start = content.find('{')
+                    end = content.rfind('}')
+                    if start != -1 and end != -1 and start < end:
+                        json_str = content[start:end+1]
+                    else:
+                        json_str = content # Assume the whole string might be JSON
+
+                results = json.loads(json_str)
                 return {
                     "status": "success",
                     "terms": results,
                     "count": len(results)
                 }
-            except json.JSONDecodeError:
-                # If not valid JSON, return the raw text
-                logger.warning("Failed to parse keyword extraction response as JSON")
+            except json.JSONDecodeError as json_err:
+                logger.error(f"extract_legal_keywords: Failed to parse JSON response: {json_err}. Raw content: {content}")
                 return {
                     "status": "error",
-                    "error": "Could not parse response",
+                    "error": f"Could not parse response as JSON: {json_err}",
                     "raw_response": content,
                     "terms": {}
                 }
-                
+
         except Exception as e:
-            logger.error(f"Error in keyword extraction: {e}")
+            logger.error(f"Error in keyword extraction: {e}", exc_info=True)
             return {
                 "status": "error",
                 "error": str(e),
                 "terms": {}
             }
-    
+
     async def generate_legal_argument(self, topic: str, points: List[str]) -> Dict[str, Any]:
         """
         Generate a structured legal argument ready for insertion into documents.
@@ -1364,30 +1382,70 @@ Keep your response concise and focused on answering the user's question directly
             Dictionary with formatted argument text
         """
         try:
-            # Get relevant context for the topic
-            docs = self.retriever.invoke(topic)
-            context_docs = self._select_docs_within_budget(docs, 4000)
-            context = "\n\n".join([doc.page_content for doc in context_docs])
+            # Get relevant context for the topic and wrap into Document objects
+            raw_docs = self.retriever.invoke(topic)
+            logger.info(f"Retriever invoked for topic '{topic}'. Raw result type: {type(raw_docs)}") # Log type
             
+            # Robustly ensure raw_docs is a list and flatten if necessary
+            if not isinstance(raw_docs, list):
+                raw_docs = [raw_docs]
+            
+            docs = []
+            for i, item in enumerate(raw_docs):
+                if isinstance(item, Document):
+                    docs.append(item)
+                elif isinstance(item, dict) and 'page_content' in item:
+                    docs.append(Document(page_content=item['page_content'], metadata=item.get('metadata', {})))
+                elif isinstance(item, str):
+                    logger.warning(f"generate_legal_argument: Retriever returned a string at index {i}: '{item[:100]}...' - wrapping.")
+                    docs.append(Document(page_content=item, metadata={'source': 'retriever_string_result'}))
+                else:
+                    # Attempt to convert unexpected types to string
+                    logger.warning(f"generate_legal_argument: Retriever returned unexpected type {type(item)} at index {i}. Converting to string.")
+                    docs.append(Document(page_content=str(item), metadata={'source': 'retriever_unknown_result'}))
+
+            logger.info(f"Processed retriever results into {len(docs)} Document objects.")
+
+            # Pass the guaranteed list of Document objects to the budget selector
+            context_docs = self._select_docs_within_budget(docs, 4000)
+
             # Create chain for argument generation
             composition_chain = create_stuff_documents_chain(
                 self.legal_specialist,
-                self.composition_prompt
+                self.composition_prompt,
+                document_variable_name="context" # Explicitly set document variable name
             )
-            
+
             # Format points as string
             points_str = "\n".join([f"- {point}" for point in points])
-            
-            # Get response
+
+            # === START DEBUG LOGGING ===
+            logger.info(f"[DEBUG] Type of context_docs before ainvoike: {type(context_docs)}")
+            if isinstance(context_docs, list):
+                logger.info(f"[DEBUG] Number of items in context_docs: {len(context_docs)}")
+                valid_docs = True
+                for i, item in enumerate(context_docs):
+                    item_type = type(item)
+                    logger.info(f"[DEBUG] Item {i} type in context_docs: {item_type}")
+                    if not isinstance(item, Document):
+                        logger.error(f"[CRITICAL] Item {i} in context_docs is NOT a Document: {item}")
+                        valid_docs = False
+                if not valid_docs:
+                     logger.error("[CRITICAL] context_docs contains non-Document items!")
+            else:
+                logger.error("[CRITICAL] context_docs is not a list!")
+            # === END DEBUG LOGGING ===
+
+            # Get response - Pass the list of Document objects directly
             response = await composition_chain.ainvoke({
                 "topic": topic,
                 "points": points_str,
-                "context": context
+                "context": context_docs # Pass the list of Documents
             })
-            
-            # Clean up the response to ensure it's properly formatted for document insertion
-            content = response.get("content", "")
-            
+
+            # Clean up the response
+            content = response if isinstance(response, str) else str(response)
+
             return {
                 "status": "success",
                 "argument": content,
@@ -1396,7 +1454,7 @@ Keep your response concise and focused on answering the user's question directly
             }
             
         except Exception as e:
-            logger.error(f"Error generating legal argument: {e}")
+            logger.error(f"Error generating legal argument: {e}", exc_info=True) # Add exc_info for full traceback
             return {
                 "status": "error",
                 "error": str(e),
@@ -1406,54 +1464,74 @@ Keep your response concise and focused on answering the user's question directly
     async def create_document_outline(self, topic: str, doc_type: str) -> Dict[str, Any]:
         """
         Create a pre-writing document outline for legal documents.
-        
+
         Args:
             topic: The subject matter of the document
             doc_type: Type of legal document (e.g., 'brief', 'memo', 'contract', 'petition')
-            
+
         Returns:
             Dictionary with formatted document outline
         """
         try:
             # Get relevant context
-            docs = self.retriever.invoke(f"{doc_type} {topic}")
+            raw_docs = self.retriever.invoke(f"{doc_type} {topic}")
+            logger.info(f"create_document_outline: Retriever invoked. Raw result type: {type(raw_docs)}")
+
+            # Robustly ensure raw_docs is a list and wrap items
+            if not isinstance(raw_docs, list):
+                raw_docs = [raw_docs]
+            docs = []
+            for i, item in enumerate(raw_docs):
+                if isinstance(item, Document):
+                    docs.append(item)
+                elif isinstance(item, dict) and 'page_content' in item:
+                    docs.append(Document(page_content=item['page_content'], metadata=item.get('metadata', {})))
+                elif isinstance(item, str):
+                    logger.warning(f"create_document_outline: Retriever returned a string at index {i} - wrapping.")
+                    docs.append(Document(page_content=item, metadata={'source': 'retriever_string_result'}))
+                else:
+                    logger.warning(f"create_document_outline: Retriever returned unexpected type {type(item)} at index {i} - converting to string.")
+                    docs.append(Document(page_content=str(item), metadata={'source': 'retriever_unknown_result'}))
+
             context_docs = self._select_docs_within_budget(docs, 3000)
-            context = "\n\n".join([doc.page_content for doc in context_docs])
-            
+            logger.info(f"create_document_outline: Selected {len(context_docs)} documents for context.")
+
             # Create chain for outline generation
             outline_chain = create_stuff_documents_chain(
                 self.legal_specialist,
-                self.outline_prompt
+                self.outline_prompt,
+                document_variable_name="context" # Explicitly set document variable name
             )
-            
-            # Get response
+
+            # Get response - pass the list of Documents
             response = await outline_chain.ainvoke({
                 "topic": topic,
                 "doc_type": doc_type,
-                "context": context
+                "context": context_docs # Pass the list of Documents
             })
-            
-            content = response.get("content", "")
-            
+
+            # Response should be the outline string
+            content = response if isinstance(response, str) else str(response)
+
             # Structure analysis for reporting
-            section_count = content.count('#')
-            subsection_count = content.count('##') 
-            
+            section_count = content.count('\n# ') + (1 if content.startswith('# ') else 0)
+            subsection_count = content.count('\n## ') + (1 if content.startswith('## ') else 0)
+
             return {
                 "status": "success",
                 "outline": content,
                 "section_count": section_count,
                 "subsection_count": subsection_count
             }
-            
+
         except Exception as e:
-            logger.error(f"Error creating document outline: {e}")
+            logger.error(f"Error creating document outline: {e}", exc_info=True)
             return {
                 "status": "error",
                 "error": str(e),
                 "outline": ""
             }
-    
+
     async def verify_citation(self, citation: str) -> Dict[str, Any]:
         """
         Verify legal citations for accuracy and provide summary information.
@@ -1483,7 +1561,11 @@ Keep your response concise and focused on answering the user's question directly
                     context += f"Source: {result.get('source', '')}\n\n"
             
             # Also search vector DB
-            docs = self.retriever.invoke(clean_citation)
+            raw_docs = self.retriever.invoke(clean_citation)
+            # Ensure list
+            if not isinstance(raw_docs, list):
+                raw_docs = [raw_docs]
+            docs = [d if hasattr(d, 'page_content') else Document(page_content=d, metadata={}) for d in raw_docs]
             context += "\n\nVector DB Results:\n"
             for doc in docs[:2]:  # Just use top 2 results
                 context += f"\n{doc.page_content[:500]}...\n"
@@ -1536,6 +1618,8 @@ Keep your response concise and focused on answering the user's question directly
         docs_for_context = []
         current_tokens = 0
         
+        # Ensure all items are Document instances
+        documents = [d if isinstance(d, Document) else Document(page_content=str(d), metadata={}) for d in documents]
         # First sort documents by relevance/priority if metadata score exists
         documents.sort(
             key=lambda x: x.metadata.get("relevance_score", 0) + x.metadata.get("domain_score", 0), 
@@ -1637,6 +1721,11 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
         
         Respond with ONLY one of these two options and no other text.
         """)
+        # Prompt for refining web search queries
+        self.search_refinement_prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are an assistant that takes a legal question about Indian law and generates up to 3 concise web search queries to retrieve relevant information. Output only a JSON array of queries, max 3."),
+            ("human", "User query: {query}")
+        ])
     
     async def _needs_tools(self, query: str) -> bool:
         """Determine if a query needs tools or can be answered directly"""
@@ -1700,12 +1789,42 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
                 tool_name = tool_step.get("tool")
                 parameters = tool_step.get("parameters", {})
                 
+                if tool_name == "web_search":
+                    # refine the web search queries using general_llm
+                    refinement = await self.general_llm.ainvoke(
+                        self.search_refinement_prompt.format_messages(query=question)
+                    )
+                    try:
+                        refined = json.loads(refinement.content)
+                    except Exception:
+                        refined = [question]
+                    # execute web_search for each refined query up to 3, max 3 results each
+                    for sub_q in refined[:3]:
+                        logger.info(f"Executing web_search with refined query: {sub_q}")
+                        sub_result = await self.tool_manager.execute_tool(
+                            "web_search", query=sub_q, max_results=3
+                        )
+                        tool_result = sub_result
+                        # process sub_result below
+                        if tool_result.get("status") == "success":
+                            results = tool_result.get("results", [])
+                            if results:
+                                all_results.extend(results)
+                                for result in results:
+                                    if not result.get("content") or len(result.get("content", "")) < 200:
+                                        continue
+                                    evaluation = await self.tool_manager.evaluate_content(result)
+                                    if evaluation.get("should_index", False) and evaluation.get("quality_score", 0) >= 7:
+                                        valuable_content.append(result)
+                                        logger.info(f"Marked content from {result.get('source', 'unknown')} for indexing (score: {evaluation.get('quality_score', 0)})")
+                    continue
+                # default tool execution
                 logger.info(f"Executing tool: {tool_name}")
                 tool_result = await self.tool_manager.execute_tool(tool_name, **parameters)
-                
+                 
                 if tool_result.get("status") == "success":
                     results = tool_result.get("results", [])
-                    
+                     
                     if results:
                         all_results.extend(results)
                         logger.info(f"Got {len(results)} results from {tool_name}")
@@ -1760,14 +1879,24 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
             # Reserve tokens for the model's response
             token_budget -= 2000  # Response tokens
             
-            # Select documents to include within token budget
+            # Select and format documents to include within token budget
             docs_for_context = self._select_docs_within_budget(documents, token_budget)
-            
-            # 7. Generate response
-            logger.info(f"Generating response with {len(docs_for_context)} documents")
+            # Build numbered references and content blocks for precise citations
+            ref_list = []
+            content_blocks = []
+            for idx, doc in enumerate(docs_for_context, start=1):
+                title = doc.metadata.get("title", "")
+                src = doc.metadata.get("source", "")
+                ref_list.append(f"[{idx}] {title} - {src}")
+                # Include content under same index
+                content_blocks.append(f"[{idx}] {doc.page_content}")
+            # Combine into single context string
+            context_str = "References:\n" + "\n".join(ref_list) + "\n\n" + "\n\n".join(content_blocks)
+            # 7. Generate response with numbered citations
+            logger.info(f"Generating response with {len(docs_for_context)} documents and formatted context")
             resp = await self.qa_chain.ainvoke({
                 "input": question,
-                "context": docs_for_context
+                "context": context_str
             })
             # Ensure response is a dict
             if isinstance(resp, dict):
@@ -1802,29 +1931,77 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
             Dict containing the complete response
         """
         try:
+            # Track execution steps for debugging/transparency
+            steps_log = []
+            
             # 1. First check if the query even needs tools
             if not await self._needs_tools(question):
                 logger.info(f"Query classified as simple, skipping tools: '{question}'")
+                steps_log.append({"type": "classification", "content": "Query classified as simple"})
                 return await self.generate_simple_response(question)
                 
             # 2. Planning phase - determine which tools to use
             plan = await self.tool_manager.create_plan(question)
             logger.info(f"Created plan: {plan['plan']}")
+            steps_log.append({"type": "planning", "content": plan['plan']})
             
             # 3. Tool execution phase
             all_results = []
             valuable_content = []
+            tool_results = {}  # Store results by tool type
             
             for tool_step in plan.get("tools", []):
                 tool_name = tool_step.get("tool")
                 parameters = tool_step.get("parameters", {})
                 
+                if tool_name == "web_search":
+                    # refine web search queries
+                    refinement = await self.general_llm.ainvoke(
+                        self.search_refinement_prompt.format_messages(query=question)
+                    )
+                    try:
+                        refined = json.loads(refinement.content)
+                    except Exception:
+                        refined = [question]
+                    
+                    web_results = {"status": "success", "results": []}  # Initialize web results
+                    steps_log.append({"type": "web_search_refinement", "content": refined})
+                    
+                    for sub_q in refined[:3]:
+                        logger.info(f"Executing web_search with refined query: {sub_q}")
+                        sub_result = await self.tool_manager.execute_tool(
+                            "web_search", query=sub_q, max_results=3
+                        )
+                        
+                        if sub_result.get("status") == "success":
+                            results = sub_result.get("results", [])
+                            if results:
+                                all_results.extend(results)
+                                web_results["results"].extend(results)  # Add to web results
+                                for result in results:
+                                    if not result.get("content") or len(result.get("content", "")) < 200:
+                                        continue
+                                    evaluation = await self.tool_manager.evaluate_content(result)
+                                    if evaluation.get("should_index", False) and evaluation.get("quality_score", 0) >= 7:
+                                        valuable_content.append(result)
+                                        logger.info(f"Marked content from {result.get('source', 'unknown')} for indexing (score: {evaluation.get('quality_score', 0)})")
+                    
+                    # Store the combined web results
+                    tool_results["web_search"] = web_results
+                    steps_log.append({"type": "web_search", "content": f"Found {len(web_results['results'])} web results"})
+                    continue
+                    
+                # default tool execution
                 logger.info(f"Executing tool: {tool_name}")
                 tool_result = await self.tool_manager.execute_tool(tool_name, **parameters)
-                
+                 
                 if tool_result.get("status") == "success":
                     results = tool_result.get("results", [])
                     
+                    # Store results by tool name
+                    tool_results[tool_name] = tool_result
+                    steps_log.append({"type": tool_name, "content": f"Found {len(results)} results"})
+                     
                     if results:
                         all_results.extend(results)
                         logger.info(f"Got {len(results)} results from {tool_name}")
@@ -1846,21 +2023,13 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
                 logger.info(f"Indexing {len(valuable_content)} valuable pieces of content")
                 indexing_result = await self.tool_manager.execute_tool("pinecone_indexer", content=valuable_content)
                 logger.info(f"Indexing result: {indexing_result}")
+                steps_log.append({"type": "indexing", "content": f"Indexed {len(valuable_content)} valuable pieces of content"})
             
             # 5. Convert to Document objects for final response generation
             documents = []
-            sources = []  # Track sources for return value
-            
             for result in all_results:
                 if not result.get("content"):
                     continue
-                
-                # Add to sources list for return value
-                sources.append({
-                    "title": result.get("title", "Unknown"),
-                    "source": result.get("source", ""),
-                    "type": result.get("type", "document")
-                })
                     
                 documents.append(
                     Document(
@@ -1873,61 +2042,84 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
                         }
                     )
                 )
+
+            # Select relevant documents within token budget
+            docs_for_context = self._select_docs_within_budget(documents, self.max_input_tokens)
+            logger.info(f"Generating response with {len(docs_for_context)} documents and formatted context")
+            steps_log.append({"type": "context_selection", "content": f"Selected {len(docs_for_context)} documents for context"})
+
+            # Format context string for human-readable display and tracking
+            sources_list = []
+            source_map = {}
+            source_counter = 1
+            # Extract sources for the response metadata but don't modify the docs themselves
+            for i, doc in enumerate(docs_for_context):
+                source_url = doc.metadata.get("source", f"source_{i+1}")
+                if source_url not in source_map:
+                    source_map[source_url] = source_counter
+                    sources_list.append({
+                        "id": source_counter, 
+                        "url": source_url, 
+                        "title": doc.metadata.get("title", source_url)
+                    })
+                    source_counter += 1
+                # Add source reference to metadata for citation purposes
+                doc.metadata["source_id"] = source_map[source_url]
             
-            # 6. Manage token count
-            token_budget = self.max_input_tokens
-            question_tokens = self._count_tokens(question)
-            token_budget -= question_tokens
-            
-            # Calculate tokens for prompt template (fixed approximation)
-            system_prompt = "You are a legal assistant specializing in Indian law. Analyze the following legal context and provide a detailed, accurate response with proper citations."
-            human_prompt_template = "Context:\n{context}\n\nQuestion: {input}"
-            prompt_template_tokens = self._count_tokens(system_prompt) + self._count_tokens(human_prompt_template)
-            token_budget -= prompt_template_tokens
-            
-            # Reserve tokens for the model's response
-            token_budget -= 2000  # Response tokens
-            
-            # Select documents to include within token budget
-            docs_for_context = self._select_docs_within_budget(documents, token_budget)
-            
-            # 7. Generate response
-            logger.info(f"Generating response with {len(docs_for_context)} documents")
-            resp = await self.qa_chain.ainvoke({
-                "input": question,
-                "context": docs_for_context
-            })
-            # Ensure response is mutable dict
-            if isinstance(resp, dict):
-                response_obj = resp
-            else:
-                # Wrap raw response
-                content = resp.content if hasattr(resp, 'content') else str(resp)
-                response_obj = {"content": content}
-            # Add sources detail
-            response_obj["details"] = {"sources": sources[:5]}
-            return response_obj
-        except Exception as e:
-            logger.error(f"Error in non-streaming query: {e}")
-            # Fallback to simpler approach
+            # Generate final response using the QA chain - pass the Document objects directly
             try:
-                # Get some documents from vector DB
-                docs = self.retriever.invoke(question)
                 response = await self.qa_chain.ainvoke({
                     "input": question,
-                    "context": docs[:3]  # Use only top 3 docs
+                    "context": docs_for_context  # Pass Document objects list, not a string
                 })
-                response["details"] = {"sources": []}  # Empty sources list for fallback
-                return response
-            except Exception as e2:
-                logger.error(f"Error in fallback query: {e2}")
-                return {"content": f"I'm having trouble answering this question due to a technical error. Please try asking in a different way or contact support. Error: {str(e2)}"}
+                # Extract response content
+                answer = response.content if hasattr(response, 'content') else str(response)
+            except Exception as chain_error:
+                logger.error(f"Error in QA chain: {chain_error}", exc_info=True)
+                # Fallback to simpler chain if complex one fails
+                try:
+                    # Create a simpler format for the context as fallback
+                    simple_context = "\n\n".join([f"[{doc.metadata.get('source_id', 'unknown')}] {doc.page_content}" for doc in docs_for_context])
+                    simple_prompt = ChatPromptTemplate.from_messages([
+                        ("system", "You are an Indian legal assistant. Provide a helpful response based on the context."),
+                        ("human", "Context:\n{context}\n\nQuestion: {input}")
+                    ])
+                    simple_chain = simple_prompt | self.legal_specialist
+                    simple_response = await simple_chain.ainvoke({
+                        "input": question,
+                        "context": simple_context
+                    })
+                    answer = simple_response.content
+                    logger.info("Used fallback simple chain for response")
+                    steps_log.append({"type": "recovery", "content": "Used fallback chain due to error"})
+                except Exception as fallback_error:
+                    logger.error(f"Error in fallback chain: {fallback_error}")
+                    answer = f"I apologize, but I encountered technical difficulties processing your request about BNS Section 77. Please try again or rephrase your question."
+
+            # Structure the final response
+            final_response = {
+                "answer": answer,
+                "sources": sources_list,
+                "steps": steps_log
+            }
+            return final_response
+
+        except Exception as e:
+            logger.error(f"Error in non-streaming query: {e}", exc_info=True)
+            # Fallback response in case of error
+            return {
+                "answer": f"Sorry, I encountered an error processing your request: {str(e)}. Please try again later.",
+                "sources": [],
+                "steps": [{"type": "error", "content": str(e)}]
+            }
     
     def _select_docs_within_budget(self, documents: List[Document], token_budget: int) -> List[Document]:
         """Select documents to include within token budget"""
         docs_for_context = []
         current_tokens = 0
         
+        # Ensure all items are Document instances
+        documents = [d if isinstance(d, Document) else Document(page_content=str(d), metadata={}) for d in documents]
         # First sort documents by relevance/priority if metadata score exists
         documents.sort(
             key=lambda x: x.metadata.get("relevance_score", 0) + x.metadata.get("domain_score", 0), 
@@ -1987,3 +2179,5 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
                 break
         
         return docs_for_context
+
+

@@ -271,11 +271,26 @@ elif st.session_state.current_tab == "Legal Keyword Extraction":
     Perfect for understanding complex legal documents or preparing study materials.
     """)
     
+    # Add a hint for better user experience
+    with st.expander("ℹ️ How to use this feature", expanded=False):
+        st.markdown("""
+        1. Paste or type any legal text in the area below
+        2. Click 'Extract Keywords' and wait for processing
+        3. Review the extracted terms and their definitions
+        4. Download the results in JSON format if needed
+        """)
+    
     legal_text = st.text_area("Paste legal text for keyword extraction:", 
                              height=200, 
-                             key="legal_text_input")
+                             key="legal_text_input",
+                             help="Paste any legal document text here for analysis")
     
-    if st.button("Extract Keywords", type="primary") and legal_text:
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        extract_button = st.button("Extract Keywords", type="primary", 
+                                 help="Click to analyze the text and extract legal terms")
+    
+    if extract_button and legal_text:
         with st.spinner("Extracting legal keywords..."):
             try:
                 response = requests.post(
@@ -298,9 +313,24 @@ elif st.session_state.current_tab == "Legal Keyword Extraction":
                     elif step.get('type') == 'error':
                         thinking_placeholder.text(f"Error: {step['content']}")
                         break
+                
                 # Display results
                 if terms:
                     st.success(f"Found {len(terms)} legal terms!")
+                    
+                    # Only create download button once, outside the loop
+                    terms_json = json.dumps(terms, indent=2)
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        st.download_button(
+                            label="Download Terms as JSON",
+                            data=terms_json,
+                            file_name="legal_terms.json",
+                            mime="application/json",
+                            key="download_terms_json",  # Add a unique key
+                            help="Save extracted terms to a JSON file"
+                        )
+                    
                     # Display terms in a nice format
                     st.markdown("### Extracted Legal Terms")
                     for term, definition in terms.items():
@@ -310,15 +340,6 @@ elif st.session_state.current_tab == "Legal Keyword Extraction":
                             <div class='definition'>{definition}</div>
                         </div>
                         """, unsafe_allow_html=True)
-                        
-                        # Add a download button
-                        terms_json = json.dumps(terms, indent=2)
-                        st.download_button(
-                            label="Download Terms as JSON",
-                            data=terms_json,
-                            file_name="legal_terms.json",
-                            mime="application/json"
-                        )
                 else:
                     st.info("No specialized legal terms were found in the text.")
             except Exception as e:

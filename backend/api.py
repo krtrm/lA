@@ -3,8 +3,6 @@ import logging
 import asyncio
 import time
 import json
-import uuid
-import re
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -74,6 +72,21 @@ logger.info(f"Setting IK data dir to: {os.environ['INDIANKANOON_DATA_DIR']}")
 
 # Global RAG system variable
 rag_system = None
+
+@app.on_event("startup")
+async def initialize_rag_system_on_startup():
+    """Initialize RAG system at application startup if not already initialized"""
+    global rag_system
+    if rag_system is None:
+        try:
+            # Offload to threadpool to avoid blocking event loop
+            rag_system = await run_in_threadpool(init_rag_system, index_name, namespace)
+            if rag_system:
+                logger.info("RAG system initialized at startup")
+            else:
+                logger.error("init_rag_system returned None at startup")
+        except Exception as e:
+            logger.error(f"Error initializing RAG system at startup: {e}")
 
 logger.info(f"Attempting to initialize RAG system with index: {index_name}, namespace: {namespace}")
 
@@ -464,6 +477,12 @@ async def extract_legal_keywords(request: KeywordExtractionRequest):
 
 @app.post("/extract_keywords/stream")
 async def stream_extract_legal_keywords(request: KeywordExtractionRequest):
+    global rag_system
+    if rag_system is None:
+        try:
+            rag_system = await run_in_threadpool(init_rag_system, index_name, namespace)
+        except Exception:
+            pass
     if not rag_system:
         return JSONResponse(
             status_code=503,
@@ -533,6 +552,12 @@ async def generate_legal_argument(request: ArgumentGenerationRequest):
 
 @app.post("/generate_argument/stream")
 async def stream_generate_legal_argument(request: ArgumentGenerationRequest):
+    global rag_system
+    if rag_system is None:
+        try:
+            rag_system = await run_in_threadpool(init_rag_system, index_name, namespace)
+        except Exception:
+            pass
     if not rag_system:
         return JSONResponse(
             status_code=503,
@@ -606,6 +631,13 @@ async def create_document_outline(request: OutlineGenerationRequest):
 
 @app.post("/create_outline/stream")
 async def stream_create_document_outline(request: OutlineGenerationRequest):
+    global rag_system
+    if rag_system is None:
+        # lazy initialize if startup failed
+        try:
+            rag_system = await run_in_threadpool(init_rag_system, index_name, namespace)
+        except Exception:
+            pass
     if not rag_system:
         return JSONResponse(
             status_code=503,
@@ -679,6 +711,12 @@ async def verify_legal_citation(request: CitationVerificationRequest):
 
 @app.post("/verify_citation/stream")
 async def stream_verify_legal_citation(request: CitationVerificationRequest):
+    global rag_system
+    if rag_system is None:
+        try:
+            rag_system = await run_in_threadpool(init_rag_system, index_name, namespace)
+        except Exception:
+            pass
     if not rag_system:
         return JSONResponse(
             status_code=503,
