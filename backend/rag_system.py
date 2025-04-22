@@ -1562,13 +1562,34 @@ Return only the JSON object, nothing else.
             
             # Also search vector DB
             raw_docs = self.retriever.invoke(clean_citation)
-            # Ensure list
-            if not isinstance(raw_docs, list):
-                raw_docs = [raw_docs]
-            docs = [d if hasattr(d, 'page_content') else Document(page_content=d, metadata={}) for d in raw_docs]
+            
+            # Add vector DB results to context with better error handling
             context += "\n\nVector DB Results:\n"
-            for doc in docs[:2]:  # Just use top 2 results
-                context += f"\n{doc.page_content[:500]}...\n"
+            try:
+                # First ensure raw_docs is a list
+                if not isinstance(raw_docs, list):
+                    raw_docs = [raw_docs]
+                
+                # Process each document safely
+                for i, doc in enumerate(raw_docs[:2]):  # Just use top 2 results
+                    if isinstance(doc, Document):
+                        # Already a Document object
+                        context += f"\n{doc.page_content[:500]}...\n"
+                    elif hasattr(doc, 'page_content'):
+                        # Has page_content attribute but may not be Document instance
+                        context += f"\n{doc.page_content[:500]}...\n"
+                    elif isinstance(doc, str):
+                        # String content, add directly
+                        context += f"\n{doc[:500]}...\n"
+                    elif isinstance(doc, dict) and "page_content" in doc:
+                        # Dictionary with page_content
+                        context += f"\n{doc['page_content'][:500]}...\n"
+                    else:
+                        # Unknown format, convert to string
+                        context += f"\n{str(doc)[:500]}...\n"
+            except Exception as e:
+                logger.error(f"Error processing vector DB results: {e}")
+                context += "\nError retrieving additional context from vector DB.\n"
             
             # Create chain for citation verification
             verification_chain = create_stuff_documents_chain(
@@ -2157,10 +2178,7 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
                 else:
                     try:
                         if self.tokenizer:
-                            max_tokens = token_budget - 100  # Leave a small buffer
-                            truncated_content = self.tokenizer.decode(self.tokenizer.encode(doc.page_content)[:max_tokens])
-                            doc.page_content = truncated_content + "... [content truncated due to length]"
-                        else:
+                            max_tokens = token_budget - 100  # Leave a small buffer                            truncated_content = self.tokenizer.decode(self.tokenizer.encode(doc.page_content)[:max_tokens])                            doc.page_content = truncated_content + "... [content truncated due to length]"                        else:
                             # Simple truncation for fallback case
                             max_chars = int((token_budget - 100) * 4)  # Rough char estimate
                             doc.page_content = doc.page_content[:max_chars] + "... [content truncated]"
@@ -2179,5 +2197,3 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
                 break
         
         return docs_for_context
-
-

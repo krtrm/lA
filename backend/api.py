@@ -19,6 +19,11 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 from database import Database
 import concurrent.futures
+# Add imports needed for citation verification
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.documents import Document
+from langchain_core.runnables import RunnablePassthrough  # Add pipe import
+from rag_system import IKAPITool  # Fixed import path
 
 # Import the news API router
 from news_api import router as news_router
@@ -742,6 +747,53 @@ async def stream_verify_legal_citation(request: CitationVerificationRequest):
                 details={"tool": "indian_kanoon_search", "citation": request.citation}
             )
             
+            # Create a safe context string to avoid Document handling issues
+            context = ""
+            
+            # First check IK API for the citation
+            try:
+                ik_tool = IKAPITool()
+                clean_citation = request.citation.replace(',', ' ').replace('vs.', 'vs').replace('v.', 'v')
+                ik_results = await ik_tool.run(clean_citation, max_results=2)
+                
+                # Get context from search results
+                if ik_results.get("status") == "success" and ik_results.get("results"):
+                    context += "Indian Kanoon Results:\n"
+                    for result in ik_results.get("results", []):
+                        context += f"\nTitle: {result.get('title', '')}\n"
+                        context += f"Content excerpt: {result.get('content', '')[:500]}...\n"
+                        context += f"Source: {result.get('source', '')}\n\n"
+            except Exception as ik_error:
+                logger.error(f"Error searching Indian Kanoon: {ik_error}")
+                context += "Error retrieving information from Indian Kanoon.\n\n"
+            
+            # Also search vector DB safely
+            try:
+                raw_docs = rag_system.retriever.invoke(clean_citation)
+                context += "\nVector DB Results:\n"
+                
+                # First ensure raw_docs is a list
+                if not isinstance(raw_docs, list):
+                    raw_docs = [raw_docs]
+                
+                # Process each item safely, regardless of type
+                for i, doc in enumerate(raw_docs[:2]):  # Just use top 2 results
+                    context += f"\n--- Result {i+1} ---\n"
+                    
+                    if isinstance(doc, Document):  # LangChain Document
+                        context += f"{doc.page_content[:500]}...\n"
+                    elif hasattr(doc, 'page_content'):  # Has page_content attribute
+                        context += f"{doc.page_content[:500]}...\n"
+                    elif isinstance(doc, dict) and "page_content" in doc:  # Dict with page_content
+                        context += f"{doc['page_content'][:500]}...\n"
+                    elif isinstance(doc, str):  # String content
+                        context += f"{doc[:500]}...\n"
+                    else:  # Unknown format, convert to string
+                        context += f"{str(doc)[:500]}...\n"
+            except Exception as vector_error:
+                logger.error(f"Error retrieving vector DB results: {vector_error}")
+                context += "Error retrieving additional context from vector DB.\n"
+            
             # Retrieval step
             yield StreamStep(
                 type="retrieval",
@@ -756,18 +808,62 @@ async def stream_verify_legal_citation(request: CitationVerificationRequest):
                 timestamp=time.time()
             )
             
-            # Actual processing
-            result = await rag_system.verify_citation(request.citation)
+            # Create a simple prompt that takes a string context rather than Document handling
+            citation_verification_prompt = ChatPromptTemplate.from_messages([
+                ("system", """You are a legal citation verification specialist for Indian law. Analyze the given citation and verify its accuracy.
+                
+                Check the following:
+                1. Is the citation format correct according to Indian legal standards?
+                2. Does the case exist in Indian case law?
+                3. Is the citation to the appropriate authority?
+                4. Are there any errors in the citation?
+                
+                Format your response ONLY as JSON:
+                {{
+                  "original_citation": "the citation as provided",
+                  "is_valid": true/false,
+                  "corrected_citation": "properly formatted citation if correction needed",
+                  "summary": "brief summary of what is being cited",
+                  "error_details": "explanation of any errors found"
+                }}
+                """),
+                ("human", "Citation: {citation}\n\nContext: {context}")
+            ])
             
-            if result.get("status") == "error":
-                yield StreamStep(
-                    type="error",
-                    content=f"Error: {result.get('error', 'Unknown error')}",
-                    timestamp=time.time()
-                )
+            # Use the legal_specialist with the string-based prompt
+            try:
+                # First try creating the chain using the pipe operator
+                verification_chain = citation_verification_prompt | rag_system.legal_specialist
+                # Process using the string context
+                response = await verification_chain.ainvoke({
+                    "citation": request.citation,
+                    "context": context
+                })
+            except Exception as chain_error:
+                logger.error(f"Error creating chain: {chain_error}")
+                # Fall back to direct prompt formatting
+                prompt_messages = citation_verification_prompt.format(citation=request.citation, context=context)
+                response = await rag_system.legal_specialist.ainvoke(prompt_messages)
+            
+            # Extract response content
+            if hasattr(response, 'content'):
+                content = response.content
             else:
-                is_valid = result.get("is_valid", False)
-                corrected = result.get("corrected_citation", "")
+                content = str(response)
+            
+            # Parse JSON response
+            try:
+                import re
+                # Extract JSON from possible markdown
+                json_match = re.search(r'```json\n(.*?)\n```|```(.*?)```|\{.*\}', content, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(1) or json_match.group(2) or json_match.group(0)
+                else:
+                    json_str = content
+                
+                results = json.loads(json_str)
+                is_valid = results.get("is_valid", False)
+                corrected = results.get("corrected_citation", "")
                 
                 response_content = (
                     f"The citation {'is valid' if is_valid else 'is not valid'}. "
@@ -779,14 +875,21 @@ async def stream_verify_legal_citation(request: CitationVerificationRequest):
                     content=response_content,
                     timestamp=time.time(),
                     details={
-                        "original_citation": result.get("original_citation", request.citation),
+                        "original_citation": results.get("original_citation", request.citation),
                         "is_valid": is_valid,
                         "corrected_citation": corrected,
-                        "summary": result.get("summary", ""),
-                        "error_details": result.get("error_details", "")
+                        "summary": results.get("summary", ""),
+                        "error_details": results.get("error_details", "")
                     }
                 )
-        
+            except json.JSONDecodeError as json_err:
+                logger.error(f"Error parsing JSON: {json_err}")
+                yield StreamStep(
+                    type="error",
+                    content=f"Error parsing verification result: {str(json_err)}",
+                    timestamp=time.time()
+                )
+                
         except Exception as e:
             logger.error(f"Error in streaming citation verification: {e}")
             yield StreamStep(
