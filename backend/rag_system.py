@@ -97,8 +97,11 @@ def create_vector_store(doc_paths: List[str], index_name: str = "llama-text-embe
             # Automatically detect file type
             if doc_path.endswith('.pdf'):
                 loader = PyPDFLoader(doc_path)
-            else:
+            elif doc_path.endswith(('.docx', '.doc', '.txt', '.html', '.htm')):
                 loader = UnstructuredFileLoader(doc_path)
+            else:
+                # Unsupported file types are explicitly rejected
+                raise ValueError(f"Unsupported file type: {doc_path}")
         
         docs = loader.load()
         other_docs.extend(docs)
@@ -1860,7 +1863,7 @@ class EnhancedLegalRAGSystem(LegalRAGSystem):
                                 evaluation = await self.tool_manager.evaluate_content(result)
                                 if evaluation.get("should_index", False) and evaluation.get("quality_score", 0) >= 7:
                                     valuable_content.append(result)
-                                    logger.info(f"Marked content from {result.get('source', 'unknown')} for indexing (score: {evaluation.get('quality_score', 0)})")
+                                    logger.info(f"Marked content from {result.get('source', 'unknown')} for indexing (score: {evaluation.get("quality_score", 0)})")
             
             # 4. Index valuable content if any
             if valuable_content:
