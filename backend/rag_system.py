@@ -70,10 +70,10 @@ class SlicedOpenAIEmbeddings(OpenAIEmbeddings):
         # Slice each vector to 1024 dimensions
         return [v[:1024] if len(v) > 1024 else v for v in vectors]
 
-embeddings = SlicedOpenAIEmbeddings(model="text-embedding-3-small")
+embeddings = SlicedOpenAIEmbeddings(model=os.getenv("EMBEDDINGS_MODEL"))
 
 # Document processing pipeline
-def create_vector_store(doc_paths: List[str], index_name: str = "llama-text-embed-v2-index", namespace: str = "indian-law", books_folder: str = None):
+def create_vector_store(doc_paths: List[str], index_name: str = os.getenv("DEFAULT_INDEX_NAME"), namespace: str = os.getenv("DEFAULT_NAMESPACE"), books_folder: str = None):
     """
     Create or update a production vector store with documents, prioritizing books folder PDFs
     """
