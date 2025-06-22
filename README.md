@@ -12,7 +12,7 @@ LegalEase.app is an AI-powered legal assistant specifically designed for the Ind
 
 Watch our application in action:
 
-https://github.com/a3ro-dev/LegalEase/assets/demo.mp4
+https://github.com/a3ro-dev/LegalEase/blob/main/demo.mp4
 
 > **📹 [Click here to view the full demo video](demo.mp4)**
 > 
