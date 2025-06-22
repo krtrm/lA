@@ -26,6 +26,8 @@ Watch our application in action:
 > 
 > *The demo showcases the key features of LegalEase including legal keyword extraction, argument composition, document outline generation, and citation verification.*
 
+**Credits:** Demo video edited by [@anamika_9415](https://www.instagram.com/anamika_9415/)
+
 
 ## Table of Contents
 
