@@ -12,10 +12,11 @@ LegalEase.app is an AI-powered legal assistant specifically designed for the Ind
 
 Watch our application in action:
 
-<video width="100%" controls>
-  <source src="demo.mp4" type="video/mp4">
-  Your browser does not support the video tag. You can <a href="demo.mp4">download the demo video</a> instead.
-</video>
+https://github.com/a3ro-dev/LegalEase/assets/demo.mp4
+
+> **📹 [Click here to view the full demo video](demo.mp4)**
+> 
+> *The demo showcases the key features of LegalEase including legal keyword extraction, argument composition, document outline generation, and citation verification.*
 
 ## Table of Contents
 
