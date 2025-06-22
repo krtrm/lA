@@ -8,6 +8,15 @@
 
 LegalEase.app is an AI-powered legal assistant specifically designed for the Indian legal context. It leverages advanced language models and a sophisticated Retrieval-Augmented Generation (RAG) pipeline to provide assistance with legal research, document analysis, and drafting tasks related to Indian law.
 
+## Demo
+
+Watch our application in action:
+
+<video width="100%" controls>
+  <source src="demo.mp4" type="video/mp4">
+  Your browser does not support the video tag. You can <a href="demo.mp4">download the demo video</a> instead.
+</video>
+
 ## Table of Contents
 
 - [Features](#features)
@@ -235,6 +244,50 @@ The application consists of two parts: the backend API (FastAPI) and the fronten
     Local URL: http://localhost:8501
     Network URL: http://<your-local-ip>:8501
     ```
+
+### Testing the Dockerized Setup
+
+Once both services are defined in `docker-compose.yml`, you can verify they run together and serve requests:
+
+1. Build and start in detached mode  
+   ```bash
+   docker-compose up --build -d
+   ```
+2. Confirm both containers are healthy and listening  
+   ```bash
+   docker-compose ps
+   ```
+   You should see `backend` on port 8000 and `frontend` on port 8501.
+
+3. Inspect logs for errors or startup messages  
+   ```bash
+   docker-compose logs -f
+   ```
+
+4. Test the FastAPI health endpoint  
+   ```bash
+   curl http://localhost:8000/
+   ```
+   Expect a JSON welcome message:
+   ```json
+   {"message":"Welcome to the Vaqeel.app Legal AI API"}
+   ```
+
+5. Test a simple API query  
+   ```bash
+   curl -X POST http://localhost:8000/query \
+     -H "Content-Type: application/json" \
+     -d '{"query":"What is Section 420 IPC?","use_web":false}'
+   ```
+
+6. Verify the Streamlit frontend  
+   - Open your browser at http://localhost:8501  
+   - The LegalEase UI should load without errors, and sidebar functions should call the API.
+
+7. Tear down the setup  
+   ```bash
+   docker-compose down
+   ```
 
 ## Usage
 

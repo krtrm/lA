@@ -200,3 +200,7 @@ cython_debug/
 .pypirc
 
 frontend[deprecated]
+.dockerignore
+docker-compose.yml
+backend/Dockerfile
+frontend/Dockerfile
