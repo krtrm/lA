@@ -12,14 +12,24 @@ LegalEase.app is an AI-powered legal assistant specifically designed for the Ind
 
 Watch our application in action:
 
-https://github.com/a3ro-dev/LegalEase/blob/main/demo.mp4
-
-> **📹 [Click here to view the full demo video](demo.mp4)**
+> **🎥 Demo Video Available**
+> 
+> Due to GitHub's file size limitations, the demo video (228MB) is stored using Git LFS. 
+> 
+> **To view the demo:**
+> 1. **Clone the repository** to access the video locally:
+>    ```bash
+>    git clone https://github.com/a3ro-dev/LegalEase.git
+>    cd LegalEase
+>    ```
+> 2. **Or download directly** from [Here](https://github.com/a3ro-dev/LegalEase/raw/refs/heads/main/demo.mp4?download=) 
 > 
 > *The demo showcases the key features of LegalEase including legal keyword extraction, argument composition, document outline generation, and citation verification.*
 
+
 ## Table of Contents
 
+- [Demo](#demo)
 - [Features](#features)
 - [Technology Stack](#technology-stack)
 - [RAG Pipeline Explained](#rag-pipeline-explained)
