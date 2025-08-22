@@ -1,32 +1,8 @@
-# LegalEase.app - AI Legal Assistant for Indian Law
 
-**Developer:** a3ro-dev  
-**Email:** akshatsingh14372@outlook.com
-**Repository:** [https://github.com/a3ro-dev/LegalEase](https://github.com/a3ro-dev/LegalEase)
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) <!-- Add license badge if applicable -->
 
 LegalEase.app is an AI-powered legal assistant specifically designed for the Indian legal context. It leverages advanced language models and a sophisticated Retrieval-Augmented Generation (RAG) pipeline to provide assistance with legal research, document analysis, and drafting tasks related to Indian law.
 
-## Demo
 
-Watch our application in action:
-
-> **🎥 Demo Video Available**
-> 
-> Due to GitHub's file size limitations, the demo video (228MB) is stored using Git LFS. 
-> 
-> **To view the demo:**
-> 1. **Clone the repository** to access the video locally:
->    ```bash
->    git clone https://github.com/a3ro-dev/LegalEase.git
->    cd LegalEase
->    ```
-> 2. **Or download directly** from [Here](https://github.com/a3ro-dev/LegalEase/raw/refs/heads/main/demo.mp4?download=) 
-> 
-> *The demo showcases the key features of LegalEase including legal keyword extraction, argument composition, document outline generation, and citation verification.*
-
-**Credits:** Demo video edited by [@anamika_9415](https://www.instagram.com/anamika_9415/)
 
 
 ## Table of Contents
@@ -334,10 +310,7 @@ Please refer to our [**CONTRIBUTING.md**](CONTRIBUTING.md) file for detailed gui
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details. *(Ensure a LICENSE file with the MIT license text exists in the repository root)*
 
-## Contact
 
-**Developer:** a3ro-dev  
-**Email:** akshatsingh14372@outlook.com
 
-For issues or questions, please also consider opening an issue on the [GitHub repository](https://github.com/a3ro-dev/LegalEase).
+
 
